@@ -1,0 +1,9 @@
+<Application x:Class="DM.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- No StartupUri — we show windows programmatically in OnStartup so we can
+         insert a license gate (or any other pre-window async work) before the
+         main window ever appears. -->
+    <Application.Resources>
+    </Application.Resources>
+</Application>

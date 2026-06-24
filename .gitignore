@@ -426,6 +426,11 @@ test-results/
 *.dmg
 *.app
 
+# Un-ignore our WPF project folder whose name happens to match *.app.
+# Un-ignoring the directory alone is sufficient; obj/ and bin/ are still
+# caught by the [Oo]bj/ and [Bb]in/ rules that follow.
+!/DM.App/
+
 # content below from: https://github.com/github/gitignore/blob/main/Global/macOS.gitignore
 # General
 .DS_Store

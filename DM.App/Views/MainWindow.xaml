@@ -1,0 +1,19 @@
+<Window x:Class="DM.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:DM.App.ViewModels"
+        Title="Download Manager" Height="620" Width="960"
+        WindowStartupLocation="CenterScreen">
+
+    <Window.DataContext>
+        <vm:MainViewModel />
+    </Window.DataContext>
+
+    <Grid>
+        <!-- Placeholder — real UI will be built here -->
+        <TextBlock Text="Download Manager — placeholder UI"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   FontSize="20" Foreground="#555" />
+    </Grid>
+</Window>
