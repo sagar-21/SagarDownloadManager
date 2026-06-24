@@ -1,5 +1,6 @@
 using System.Net;
 using DM.Core.Downloading;
+using DM.Core.Settings;
 
 namespace DM.Tests.Downloading;
 
@@ -74,6 +75,192 @@ public sealed class DownloaderTests
             Assert.NotNull(finalReport);
             Assert.Equal(-1L, finalReport!.Value.TotalBytes);
             Assert.True(double.IsNaN(finalReport.Value.Percentage));
+        }
+        finally { TryDelete(dest); }
+    }
+
+    // ── Multi-segment ──────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(4)]
+    [InlineData(8)]
+    public async Task DownloadAsync_MultiSegment_WritesCorrectBytesAtEveryOffset(int connections)
+    {
+        // 4 MB — well above the 1 MB threshold that triggers multi-segment.
+        const int size = 4 * 1024 * 1024;
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        using var client = MakeClient((request, _) =>
+        {
+            // HEAD → advertise range support + total size.
+            if (request.Method == HttpMethod.Head)
+            {
+                var h = new HttpResponseMessage(HttpStatusCode.OK);
+                h.Headers.AcceptRanges.Add("bytes");
+                h.Content = new ByteArrayContent(Array.Empty<byte>());
+                h.Content.Headers.ContentLength = size;
+                return h;
+            }
+
+            // GET with Range header → serve exactly the requested slice.
+            // This is what a real CDN does: reads Range: bytes=<from>-<to>
+            // and returns HTTP 206 with exactly (to - from + 1) bytes.
+            var range = request.Headers.Range!.Ranges.Single();
+            int from  = (int)range.From!.Value;
+            int to    = (int)range.To!.Value;
+
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                // expected[from..(to+1)] gives bytes [from, to] inclusive.
+                Content = new ByteArrayContent(expected[from..(to + 1)])
+            };
+        });
+
+        var settings = new EngineSettings { MaxConnectionsPerFile = connections };
+        var dest = TempFilePath();
+
+        try
+        {
+            var reports = new List<DownloadProgress>();
+            await new Downloader(client, settings).DownloadAsync(
+                "https://fake/big.bin", dest,
+                new SyncProgress<DownloadProgress>(reports.Add));
+
+            Assert.Equal(size, new FileInfo(dest).Length);
+            // The critical assertion: every byte lands at the right offset.
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+
+            // Final report must be 100%.
+            Assert.NotEmpty(reports);
+            var last = reports[^1];
+            Assert.Equal(size, last.BytesReceived);
+        }
+        finally { TryDelete(dest); }
+    }
+
+    [Fact]
+    public async Task DownloadAsync_MultiSegment_FallsBackToSingleStream_WhenServerDeclinesRanges()
+    {
+        const int size = 4 * 1024 * 1024;
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        // Server returns HEAD 200 but WITHOUT Accept-Ranges: bytes.
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head)
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new ByteArrayContent(Array.Empty<byte>()) { Headers = { ContentLength = size } }
+                };
+
+            // Single-stream GET returns the whole file.
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(expected) { Headers = { ContentLength = size } }
+            };
+        });
+
+        var settings = new EngineSettings { MaxConnectionsPerFile = 8 };
+        var dest = TempFilePath();
+
+        try
+        {
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+        }
+        finally { TryDelete(dest); }
+    }
+
+    [Fact]
+    public async Task DownloadAsync_MultiSegment_RetriesFailedSegmentAndCompletesSuccessfully()
+    {
+        // 2 MB, 2 segments → each segment is 1 MB.
+        const int size = 2 * 1024 * 1024;
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        // The very first GET request (whichever segment fires it) returns 503.
+        // All subsequent GETs succeed — so one segment retries once and recovers.
+        int getCount = 0;
+
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head)
+            {
+                var h = new HttpResponseMessage(HttpStatusCode.OK);
+                h.Headers.AcceptRanges.Add("bytes");
+                h.Content = new ByteArrayContent(Array.Empty<byte>());
+                h.Content.Headers.ContentLength = size;
+                return h;
+            }
+
+            if (Interlocked.Increment(ref getCount) == 1)
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+
+            var range = request.Headers.Range!.Ranges.Single();
+            int from  = (int)range.From!.Value;
+            int to    = (int)range.To!.Value;
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new ByteArrayContent(expected[from..(to + 1)])
+            };
+        });
+
+        var settings = new EngineSettings
+        {
+            MaxConnectionsPerFile = 2,
+            RetryCount            = 2,
+            RetryDelay            = TimeSpan.FromMilliseconds(10) // keep test fast
+        };
+        var dest = TempFilePath();
+
+        try
+        {
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+            Assert.Equal(size, new FileInfo(dest).Length);
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+            // At least 3 GETs: 1 failed + 2 retried-or-original succeeds.
+            Assert.True(getCount >= 3, $"Expected ≥3 GET calls, got {getCount}");
+        }
+        finally { TryDelete(dest); }
+    }
+
+    [Fact]
+    public async Task DownloadAsync_MultiSegment_ThrowsWhenAllRetriesExhausted()
+    {
+        const int size = 2 * 1024 * 1024;
+
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head)
+            {
+                var h = new HttpResponseMessage(HttpStatusCode.OK);
+                h.Headers.AcceptRanges.Add("bytes");
+                h.Content = new ByteArrayContent(Array.Empty<byte>());
+                h.Content.Headers.ContentLength = size;
+                return h;
+            }
+            // All GETs fail permanently.
+            return new HttpResponseMessage(HttpStatusCode.BadGateway);
+        });
+
+        var settings = new EngineSettings
+        {
+            MaxConnectionsPerFile = 2,
+            RetryCount            = 1,
+            RetryDelay            = TimeSpan.FromMilliseconds(10)
+        };
+        var dest = TempFilePath();
+
+        try
+        {
+            var ex = await Assert.ThrowsAsync<DownloadException>(
+                () => new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest));
+
+            Assert.Equal(DownloadFailureReason.NetworkError, ex.Reason);
         }
         finally { TryDelete(dest); }
     }
