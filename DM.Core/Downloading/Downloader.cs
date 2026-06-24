@@ -1,5 +1,6 @@
 using DM.Core.Settings;
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace DM.Core.Downloading;
 
@@ -7,29 +8,49 @@ namespace DM.Core.Downloading;
 /// Downloads a URL to a file, using parallel segments when the server supports
 /// byte-range requests (HTTP 206 / Accept-Ranges: bytes).
 ///
-/// Strategy:
-///   1. HEAD probe → detect Accept-Ranges + Content-Length.
-///   2a. Multi-segment: pre-allocate the file, spawn N concurrent tasks each
-///       fetching its slice via Range header, writing directly at its offset.
-///       No temp files, no merge step — writes land in the right place immediately.
-///   2b. Single-stream fallback: plain streaming GET (server doesn't support
-///       ranges, file is below threshold, or MaxConnectionsPerFile = 1).
+/// Pause / resume:
+///   A .dmstate JSON file sits next to the download while it is in progress.
+///   Each segment records how many bytes it has completed.  On resume, the
+///   Range header skips the bytes already on disk — no re-downloading.
+///   The state file is deleted automatically on successful completion.
+///   To truly cancel (not just pause), call <see cref="DeleteState"/> afterward.
 /// </summary>
 public sealed class Downloader
 {
-    private const int    BufferSize             = 81_920;           // 80 KB — below LOH threshold
-    private const double ProgressIntervalSecs   = 0.25;            // 4 reports / second
-    private const long   MultiSegmentThreshold  = 1L * 1024 * 1024; // 1 MB minimum
+    private const int    BufferSize            = 81_920;            // 80 KB — below LOH threshold
+    private const double ProgressIntervalSecs  = 0.25;             // 4 progress reports / second
+    private const double StateSaveIntervalSecs = 3.0;              // how often .dmstate is flushed
+    private const long   MultiSegmentThreshold = 1L * 1024 * 1024; // 1 MB minimum for multi-segment
 
-    private readonly HttpClient    _http;
+    private static readonly JsonSerializerOptions StateJsonOptions = new()
+    {
+        WriteIndented      = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    private readonly HttpClient     _http;
     private readonly EngineSettings _settings;
 
-    // settings is optional so existing callers (tests) that pass only HttpClient still compile.
     public Downloader(HttpClient http, EngineSettings? settings = null)
     {
         _http     = http;
         _settings = settings ?? new EngineSettings();
     }
+
+    // ── State file helpers (public so DownloadEngine can query / clean up) ─
+
+    public static string GetStatePath(string destinationPath) =>
+        destinationPath + ".dmstate";
+
+    public static bool HasState(string destinationPath) =>
+        File.Exists(GetStatePath(destinationPath));
+
+    /// <summary>
+    /// Call this after a true cancel (not a pause) to remove the leftover state file.
+    /// On pause you deliberately keep the state file so resume can use it.
+    /// </summary>
+    public static void DeleteState(string destinationPath) =>
+        TryDeleteFile(GetStatePath(destinationPath));
 
     // ── Public entry point ─────────────────────────────────────────────────
 
@@ -39,8 +60,6 @@ public sealed class Downloader
         IProgress<DownloadProgress>? progress = null,
         CancellationToken ct = default)
     {
-        // Probe errors (network, timeout, cancel) are caught here and wrapped
-        // so callers always see DownloadException, never raw HTTP exceptions.
         ServerCapabilities cap;
         try
         {
@@ -75,28 +94,20 @@ public sealed class Downloader
 
     // ── Step 1: HEAD probe ─────────────────────────────────────────────────
 
-    /// <summary>
-    /// Sends a HEAD request to learn whether the server supports byte-range
-    /// requests and how large the file is.  Returns <see cref="ServerCapabilities.None"/>
-    /// on any non-success HTTP status (triggering single-stream fallback), but
-    /// propagates network errors and cancellation so DownloadAsync can wrap them.
-    /// </summary>
     private async Task<ServerCapabilities> ProbeAsync(string url, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Head, url);
         using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
 
-        if (!res.IsSuccessStatusCode)        // 404, 405, 5xx … → fall back silently
+        if (!res.IsSuccessStatusCode)
             return ServerCapabilities.None;
 
         bool supportsRanges = res.Headers.AcceptRanges.Contains("bytes");
         long contentLength  = res.Content.Headers.ContentLength ?? -1L;
-
-        // Both conditions required: no Content-Length means we can't pre-allocate.
         return new ServerCapabilities(supportsRanges && contentLength > 0, contentLength);
     }
 
-    // ── Step 2a: multi-segment ─────────────────────────────────────────────
+    // ── Step 2a: multi-segment with state persistence ──────────────────────
 
     private async Task MultiSegmentDownloadAsync(
         string url,
@@ -105,46 +116,69 @@ public sealed class Downloader
         IProgress<DownloadProgress>? progress,
         CancellationToken ct)
     {
-        int segCount = _settings.MaxConnectionsPerFile;
-        var segments = CalculateSegments(totalBytes, segCount);
+        string statePath = GetStatePath(destinationPath);
 
-        // Pre-allocate the full file so every segment can seek to its byte offset
-        // and write in-place concurrently.  SetLength on NTFS is near-instant.
-        var dir = Path.GetDirectoryName(destinationPath);
-        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        await using (var prealloc = new FileStream(
-            destinationPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        // Load saved state (resume) or create fresh state (new download).
+        DownloadState state = await LoadOrCreateStateAsync(
+            url, destinationPath, totalBytes, statePath, ct);
+
+        int segCount = state.Segments.Length;
+
+        // Pre-allocate the file only when starting fresh.
+        // On resume the file already exists with the previously downloaded bytes intact.
+        if (!File.Exists(destinationPath))
         {
+            var dir = Path.GetDirectoryName(destinationPath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            await using var prealloc = new FileStream(
+                destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
             prealloc.SetLength(totalBytes);
         }
 
-        // One slot per segment; each segment atomically updates only its own slot.
-        var bytesPerSegment = new long[segCount];
+        // bytesCompleted[i] = total bytes done for segment i across all sessions.
+        // Seeded from state so the aggregate progress starts from where we left off.
+        var bytesCompleted = state.Segments.Select(s => s.BytesCompleted).ToArray();
 
-        // Linked CTS: if one segment fails permanently, we abort the rest.
         using var segCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         var tasks = new Task[segCount];
         for (int i = 0; i < segCount; i++)
         {
-            var idx   = i;                        // capture by value (closure safety)
-            var start = segments[i].Start;
-            var end   = segments[i].End;
-            tasks[i]  = DownloadSegmentWithRetryAsync(
+            var idx             = i;                        // closure capture
+            var seg             = state.Segments[i];
+            var initialCompleted = seg.BytesCompleted;     // cross-session baseline
+
+            if (seg.IsComplete)
+            {
+                tasks[idx] = Task.CompletedTask;           // skip already-finished segments
+                continue;
+            }
+
+            tasks[idx] = DownloadSegmentWithRetryAsync(
                 segmentIndex:    idx,
-                startByte:       start,
-                endByte:         end,
+                startByte:       seg.StartByte,
+                resumeFromByte:  seg.ResumeFromByte,       // = StartByte + BytesCompleted
+                endByte:         seg.EndByte,
                 url:             url,
                 destinationPath: destinationPath,
-                onProgress:      bytes => Volatile.Write(ref bytesPerSegment[idx], bytes),
-                ct:              segCts.Token);
+                // onProgress receives session-only bytes; add baseline for the running total.
+                onProgress: sessionBytes =>
+                    Volatile.Write(ref bytesCompleted[idx], initialCompleted + sessionBytes),
+                ct: segCts.Token);
         }
 
-        // Run a progress reporter in parallel with the download tasks.
+        // Progress reporter: sums bytesCompleted[] every 250 ms.
         using var reportCts = CancellationTokenSource.CreateLinkedTokenSource(segCts.Token);
         var reportTask = progress is null
             ? Task.CompletedTask
-            : ReportAggregateProgressAsync(bytesPerSegment, totalBytes, progress, reportCts.Token);
+            : ReportAggregateProgressAsync(bytesCompleted, totalBytes, progress, reportCts.Token);
+
+        // State persistence loop: flushes .dmstate every StateSaveIntervalSecs.
+        // On cancel/pause, its finally block writes one last snapshot before returning.
+        using var persistCts = CancellationTokenSource.CreateLinkedTokenSource(segCts.Token);
+        var persistTask = PersistStateLoopAsync(
+            state, bytesCompleted, statePath,
+            TimeSpan.FromSeconds(StateSaveIntervalSecs), persistCts.Token);
 
         try
         {
@@ -152,62 +186,151 @@ public sealed class Downloader
         }
         catch
         {
-            // A segment exhausted its retries — cancel all peers.
             await segCts.CancelAsync();
-            // Drain so exceptions don't become unobserved faults.
             await Task.WhenAll(tasks.Select(t => t.ContinueWith(_ => { }, TaskScheduler.Default)));
             throw;
         }
         finally
         {
+            // Stop persist loop — its own finally writes the final snapshot so the
+            // state file reflects the exact pause/stop point.
+            await persistCts.CancelAsync();
+            await persistTask;                                 // wait for final save
+
             await reportCts.CancelAsync();
             await reportTask.ContinueWith(_ => { }, TaskScheduler.Default);
         }
 
-        // Emit one clean 100% snapshot.
+        // Only reachable on full success — remove state file and report 100%.
+        TryDeleteFile(statePath);
         progress?.Report(new DownloadProgress(totalBytes, totalBytes, SpeedBytesPerSecond: 0));
+    }
+
+    // ── State management ───────────────────────────────────────────────────
+
+    private async Task<DownloadState> LoadOrCreateStateAsync(
+        string url, string destinationPath, long totalBytes,
+        string statePath, CancellationToken ct)
+    {
+        if (File.Exists(statePath))
+        {
+            try
+            {
+                await using var f = File.OpenRead(statePath);
+                var saved = await JsonSerializer.DeserializeAsync<DownloadState>(
+                    f, StateJsonOptions, ct);
+
+                // Validate that the saved state matches this exact download request.
+                if (saved is not null
+                    && saved.Url        == url
+                    && saved.TotalBytes == totalBytes
+                    && saved.Segments.Length > 0)
+                {
+                    return saved;  // ← resume path
+                }
+            }
+            catch { /* corrupted or incompatible state — fall through */ }
+        }
+
+        // Fresh download: compute segments and write the initial state file immediately
+        // so even a very early crash leaves a recoverable .dmstate on disk.
+        var ranges  = CalculateSegments(totalBytes, _settings.MaxConnectionsPerFile);
+        var state   = new DownloadState
+        {
+            Url             = url,
+            DestinationPath = destinationPath,
+            TotalBytes      = totalBytes,
+            Segments        = ranges.Select((r, i) => new SegmentState
+            {
+                Index          = i,
+                StartByte      = r.Start,
+                EndByte        = r.End,
+                BytesCompleted = 0
+            }).ToArray()
+        };
+        var zeros = new long[state.Segments.Length];  // all zeros
+        await PersistStateAsync(state, zeros, statePath);
+        return state;
+    }
+
+    /// <summary>
+    /// Reads the live bytesCompleted[] counters, stamps them into the state object,
+    /// then writes to a temp file and atomically renames it over the real state file.
+    /// Atomic rename means a crash mid-write never leaves a corrupted .dmstate.
+    /// </summary>
+    private static async Task PersistStateAsync(
+        DownloadState state, long[] bytesCompleted, string statePath)
+    {
+        for (int i = 0; i < state.Segments.Length; i++)
+            state.Segments[i].BytesCompleted = Volatile.Read(ref bytesCompleted[i]);
+
+        var tmpPath = statePath + ".tmp";
+        await using (var stream = new FileStream(
+            tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            await JsonSerializer.SerializeAsync(stream, state, StateJsonOptions);
+            await stream.FlushAsync();
+        }
+        File.Move(tmpPath, statePath, overwrite: true);
+    }
+
+    private static async Task PersistStateLoopAsync(
+        DownloadState state, long[] bytesCompleted,
+        string statePath, TimeSpan interval, CancellationToken ct)
+    {
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(interval, ct);
+                await PersistStateAsync(state, bytesCompleted, statePath);
+            }
+        }
+        catch (OperationCanceledException) { }
+
+        // Final snapshot: captures the exact pause/stop point regardless of
+        // when the periodic save last ran.
+        await PersistStateAsync(state, bytesCompleted, statePath);
     }
 
     // ── Segment retry wrapper ──────────────────────────────────────────────
 
     private async Task DownloadSegmentWithRetryAsync(
         int    segmentIndex,
-        long   startByte,
+        long   startByte,        // original range start (for error messages)
+        long   resumeFromByte,   // where to actually start the request this session
         long   endByte,
         string url,
         string destinationPath,
         Action<long> onProgress,
         CancellationToken ct)
     {
-        int maxAttempts = _settings.RetryCount + 1;
-        Exception? lastEx = null;
+        int        maxAttempts = _settings.RetryCount + 1;
+        Exception? lastEx      = null;
 
         for (int attempt = 0; attempt < maxAttempts; attempt++)
         {
             if (attempt > 0)
             {
-                // Exponential back-off: base × 2^(attempt−1).
-                // Attempt 1 → base, 2 → 2× base, 3 → 4× base …
                 var delay = TimeSpan.FromMilliseconds(
                     _settings.RetryDelay.TotalMilliseconds * (1 << (attempt - 1)));
                 await Task.Delay(delay, ct);
 
-                // Reset this segment's counter so the UI doesn't jump backward
-                // when the retried segment re-downloads bytes it had already counted.
+                // Reset session counter to 0 — the closure adds initialCompleted back,
+                // so bytesCompleted[idx] snaps back to the cross-session baseline.
                 onProgress(0);
             }
 
             try
             {
                 await DownloadSegmentAsync(
-                    segmentIndex, startByte, endByte, url, destinationPath, onProgress, ct);
-                return; // success — exit retry loop
+                    segmentIndex, resumeFromByte, endByte, url, destinationPath, onProgress, ct);
+                return;
             }
             catch (DownloadException ex) when (ex.Reason is not DownloadFailureReason.Cancelled)
             {
-                lastEx = ex; // retryable — loop continues
+                lastEx = ex;
             }
-            // Cancellation is NOT retried; it re-throws immediately.
         }
 
         throw new DownloadException(
@@ -219,33 +342,26 @@ public sealed class Downloader
     // ── Single segment (one Range request) ────────────────────────────────
 
     /// <summary>
-    /// Fetches the byte range [startByte, endByte] from the server using an
-    /// HTTP Range header, then writes the body into the pre-allocated file
-    /// at the correct byte offset.
+    /// Issues  Range: bytes=resumeFromByte-endByte  and writes the response body
+    /// directly into the pre-allocated file starting at that same offset.
     ///
-    /// ┌──────────────────────────────────────────────────────────────────┐
-    /// │  HOW THE RANGE HEADER WORKS                                      │
-    /// │                                                                  │
-    /// │  Request:  Range: bytes=&lt;start&gt;-&lt;end&gt;                            │
-    /// │  • Both values are *inclusive* and zero-indexed.                 │
-    /// │  • The server replies with HTTP 206 Partial Content.             │
-    /// │  • Response header: Content-Range: bytes &lt;start&gt;-&lt;end&gt;/&lt;total&gt;  │
-    /// │                                                                  │
-    /// │  Example — 10 MB file, 4 segments (bytes, zero-indexed):        │
-    /// │  Seg 0   Range: bytes=0-2621439         (0 → 2.5 MB − 1)       │
-    /// │  Seg 1   Range: bytes=2621440-5242879   (2.5 MB → 5 MB − 1)    │
-    /// │  Seg 2   Range: bytes=5242880-7864319   (5 MB → 7.5 MB − 1)    │
-    /// │  Seg 3   Range: bytes=7864320-10485759  (7.5 MB → 10 MB − 1)   │
-    /// │                                                                  │
-    /// │  The last segment's end = totalBytes − 1 (inclusive).           │
-    /// │  Each response body contains exactly (end − start + 1) bytes.   │
-    /// │  Those bytes are written at file offset = start, so the final   │
-    /// │  file is assembled in-place without a separate merge step.      │
-    /// └──────────────────────────────────────────────────────────────────┘
+    /// HOW RESUME AVOIDS RE-DOWNLOADING DATA
+    /// ──────────────────────────────────────
+    /// Every byte before resumeFromByte is already correct on disk (written in a
+    /// prior session).  The Range header tells the server to skip those bytes
+    /// entirely; it streams only the remaining suffix:
+    ///
+    ///   Segment covers:  bytes 0 – 2,621,439   (2.5 MB)
+    ///   Previous session wrote: 0 – 524,287    (512 KB done)
+    ///   Resume request:  Range: bytes=524288-2621439
+    ///   Server returns:  2,097,152 bytes (the remaining 2 MB)
+    ///   File write seeks to offset 524288 and fills the rest in-place.
+    ///
+    /// The file therefore assembles without any copy or merge step.
     /// </summary>
     private async Task DownloadSegmentAsync(
         int    segmentIndex,
-        long   startByte,
+        long   resumeFromByte,
         long   endByte,
         string url,
         string destinationPath,
@@ -253,7 +369,7 @@ public sealed class Downloader
         CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(startByte, endByte);
+        req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(resumeFromByte, endByte);
 
         HttpResponseMessage res;
         try
@@ -285,15 +401,12 @@ public sealed class Downloader
             try
             {
                 await using var body = await res.Content.ReadAsStreamAsync(ct);
-
-                // Open the pre-allocated file and position at this segment's start.
-                // FileShare.ReadWrite lets all concurrent segment writers coexist;
-                // they write to disjoint byte ranges so there is no contention.
                 await using var file = new FileStream(
                     destinationPath, FileMode.Open, FileAccess.Write,
                     FileShare.ReadWrite, BufferSize, useAsync: true);
-                file.Seek(startByte, SeekOrigin.Begin);
 
+                // Seek to the exact byte where writing should continue.
+                file.Seek(resumeFromByte, SeekOrigin.Begin);
                 await WriteWithProgressAsync(body, file, onProgress, ct);
             }
             catch (OperationCanceledException ex)
@@ -308,7 +421,7 @@ public sealed class Downloader
         }
     }
 
-    // ── Step 2b: single-stream fallback ───────────────────────────────────
+    // ── Step 2b: single-stream fallback (no state file) ───────────────────
 
     private async Task SingleSegmentDownloadAsync(
         string url,
@@ -353,21 +466,20 @@ public sealed class Downloader
                     FileShare.None, BufferSize, useAsync: true);
 
                 long bytesReceived = 0;
-                var sw = Stopwatch.StartNew();
-                var lastAt    = TimeSpan.Zero;
-                var lastBytes = 0L;
+                var  sw            = Stopwatch.StartNew();
+                var  lastAt        = TimeSpan.Zero;
+                var  lastBytes     = 0L;
 
                 await WriteWithProgressAsync(body, file, bytes =>
                 {
                     bytesReceived = bytes;
                     if (progress is null) return;
 
-                    var now = sw.Elapsed;
+                    var now   = sw.Elapsed;
                     var delta = (now - lastAt).TotalSeconds;
                     if (delta < ProgressIntervalSecs) return;
 
-                    var speed = (bytes - lastBytes) / delta;
-                    progress.Report(new DownloadProgress(bytes, totalBytes, speed));
+                    progress.Report(new DownloadProgress(bytes, totalBytes, (bytes - lastBytes) / delta));
                     lastAt    = now;
                     lastBytes = bytes;
                 }, ct);
@@ -386,15 +498,13 @@ public sealed class Downloader
         }
     }
 
-    // ── Shared helpers ─────────────────────────────────────────────────────
+    // ── Shared stream helpers ──────────────────────────────────────────────
 
     private static async Task WriteWithProgressAsync(
-        Stream source,
-        Stream destination,
-        Action<long> onProgress,
-        CancellationToken ct)
+        Stream source, Stream destination,
+        Action<long> onProgress, CancellationToken ct)
     {
-        var buffer        = new byte[BufferSize];
+        var  buffer       = new byte[BufferSize];
         long bytesWritten = 0;
 
         int read;
@@ -406,15 +516,9 @@ public sealed class Downloader
         }
     }
 
-    /// <summary>
-    /// Runs as a background task alongside the segment tasks, summing all
-    /// segment byte-counts every 250 ms and reporting aggregate speed.
-    /// </summary>
     private static async Task ReportAggregateProgressAsync(
-        long[] bytesPerSegment,
-        long totalBytes,
-        IProgress<DownloadProgress> progress,
-        CancellationToken ct)
+        long[] bytesCompleted, long totalBytes,
+        IProgress<DownloadProgress> progress, CancellationToken ct)
     {
         var sw        = Stopwatch.StartNew();
         var lastTime  = TimeSpan.Zero;
@@ -428,32 +532,28 @@ public sealed class Downloader
 
                 var now     = sw.Elapsed;
                 var current = 0L;
-                for (int i = 0; i < bytesPerSegment.Length; i++)
-                    current += Volatile.Read(ref bytesPerSegment[i]);
+                for (int i = 0; i < bytesCompleted.Length; i++)
+                    current += Volatile.Read(ref bytesCompleted[i]);
 
                 var deltaSecs = (now - lastTime).TotalSeconds;
-                // Clamp to 0: a segment reset on retry can temporarily push current below lastTotal.
-                var speed = deltaSecs > 0 ? Math.Max(0, (current - lastTotal) / deltaSecs) : 0;
+                var speed     = deltaSecs > 0
+                    ? Math.Max(0, (current - lastTotal) / deltaSecs)
+                    : 0;
 
                 progress.Report(new DownloadProgress(current, totalBytes, speed));
                 lastTime  = now;
                 lastTotal = current;
             }
         }
-        catch (OperationCanceledException) { /* normal shutdown — all segments finished */ }
+        catch (OperationCanceledException) { }
     }
 
-    /// <summary>
-    /// Splits <paramref name="totalBytes"/> into <paramref name="count"/> contiguous,
-    /// non-overlapping ranges.  The last segment absorbs any remainder bytes.
-    ///
-    /// Example: 10 MB (10,485,760 bytes), 4 segments, segSize = 2,621,440:
-    ///   (0, 2621439) | (2621440, 5242879) | (5242880, 7864319) | (7864320, 10485759)
-    /// </summary>
+    // ── Segment calculation ────────────────────────────────────────────────
+
     private static (long Start, long End)[] CalculateSegments(long totalBytes, int count)
     {
-        var    segs    = new (long Start, long End)[count];
-        long segSize   = totalBytes / count;
+        var  segs    = new (long Start, long End)[count];
+        long segSize = totalBytes / count;
 
         for (int i = 0; i < count; i++)
         {
@@ -463,6 +563,11 @@ public sealed class Downloader
         }
 
         return segs;
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try { File.Delete(path); } catch { }
     }
 
     private readonly record struct ServerCapabilities(bool SupportsRanges, long ContentLength)

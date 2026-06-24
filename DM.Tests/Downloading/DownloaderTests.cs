@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using DM.Core.Downloading;
 using DM.Core.Settings;
 
@@ -265,6 +266,155 @@ public sealed class DownloaderTests
         finally { TryDelete(dest); }
     }
 
+    // ── Pause / resume ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task DownloadAsync_MultiSegment_DeletesStateFile_OnSuccess()
+    {
+        const int size = 2 * 1024 * 1024;
+        var data = new byte[size];
+
+        using var client = MakeRangeCapableClient(data);
+        var settings  = new EngineSettings { MaxConnectionsPerFile = 2 };
+        var dest      = TempFilePath();
+        var statePath = Downloader.GetStatePath(dest);
+
+        try
+        {
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+            Assert.False(File.Exists(statePath),
+                "State file should be deleted after successful completion");
+        }
+        finally { TryDelete(dest); TryDelete(statePath); }
+    }
+
+    [Fact]
+    public async Task Pause_PersistsStateFile_WithCorrectMetadata()
+    {
+        // The BlockingStream never yields data, so cancellation fires before any
+        // bytes are transferred — but the state file is written at session start.
+        const int size = 4 * 1024 * 1024;
+
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head)
+                return RangeHeadResponse(size);
+
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new StreamContent(new BlockingStream())
+            };
+        });
+
+        var settings  = new EngineSettings { MaxConnectionsPerFile = 2, RetryCount = 0 };
+        var dest      = TempFilePath();
+        var statePath = Downloader.GetStatePath(dest);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+
+        try
+        {
+            var ex = await Assert.ThrowsAsync<DownloadException>(
+                () => new Downloader(client, settings).DownloadAsync(
+                    "https://fake/big.bin", dest, ct: cts.Token));
+
+            Assert.Equal(DownloadFailureReason.Cancelled, ex.Reason);
+            Assert.True(File.Exists(statePath), "State file must survive a pause");
+
+            var stateJson = await File.ReadAllTextAsync(statePath);
+            var state = JsonSerializer.Deserialize<DownloadState>(stateJson,
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })!;
+
+            Assert.Equal("https://fake/big.bin", state.Url);
+            Assert.Equal(size, state.TotalBytes);
+            Assert.Equal(2, state.Segments.Length);
+        }
+        finally { TryDelete(dest); TryDelete(statePath); }
+    }
+
+    [Fact]
+    public async Task Resume_SkipsAlreadyDownloadedBytes_ViaRangeHeaders()
+    {
+        // 4 MB file, 2 segments (2 MB each).
+        // Simulate a previous session that completed the first half of each segment.
+        const int size     = 4 * 1024 * 1024;
+        const int half     = size / 2;    // segment boundary
+        const int resume0  = half / 2;    // seg 0: first 1 MB already written
+        const int resume1  = half / 4;    // seg 1: first 512 KB already written
+
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        var capturedRanges = new List<(long From, long To)>();
+
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head)
+                return RangeHeadResponse(size);
+
+            var r    = request.Headers.Range!.Ranges.Single();
+            long from = r.From!.Value;
+            long to   = r.To!.Value;
+            lock (capturedRanges) capturedRanges.Add((from, to));
+
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new ByteArrayContent(expected[(int)from..(int)(to + 1)])
+            };
+        });
+
+        var settings  = new EngineSettings { MaxConnectionsPerFile = 2, RetryCount = 0 };
+        var dest      = TempFilePath();
+        var statePath = Downloader.GetStatePath(dest);
+
+        try
+        {
+            // ── Build partial state from previous session ───────────────────
+            // Write the bytes that were "already" downloaded.
+            await using (var f = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                f.SetLength(size);
+                f.Seek(0,    SeekOrigin.Begin); await f.WriteAsync(expected.AsMemory(0,    resume0));
+                f.Seek(half, SeekOrigin.Begin); await f.WriteAsync(expected.AsMemory(half, resume1));
+            }
+
+            // Write the matching .dmstate file.
+            var savedState = new DownloadState
+            {
+                Url             = "https://fake/big.bin",
+                DestinationPath = dest,
+                TotalBytes      = size,
+                Segments        =
+                [
+                    new SegmentState { Index = 0, StartByte = 0,    EndByte = half - 1, BytesCompleted = resume0 },
+                    new SegmentState { Index = 1, StartByte = half, EndByte = size - 1, BytesCompleted = resume1 }
+                ]
+            };
+            File.WriteAllText(statePath, JsonSerializer.Serialize(savedState,
+                new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+
+            // ── Resume ──────────────────────────────────────────────────────
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+
+            // ── Verify Range headers start from resume points ────────────────
+            // Segment 0 must have requested starting at resume0, not 0.
+            Assert.Contains(capturedRanges, r => r.From == resume0);
+            // Segment 1 must have requested starting at half + resume1, not half.
+            Assert.Contains(capturedRanges, r => r.From == half + resume1);
+
+            // Neither segment should have re-requested from byte 0 or the segment start.
+            Assert.DoesNotContain(capturedRanges, r => r.From == 0);
+            Assert.DoesNotContain(capturedRanges, r => r.From == half);
+
+            // Final file is byte-perfect.
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+
+            // State file is cleaned up.
+            Assert.False(File.Exists(statePath));
+        }
+        finally { TryDelete(dest); TryDelete(statePath); }
+    }
+
     // ── Error cases ────────────────────────────────────────────────────────
 
     [Theory]
@@ -321,6 +471,34 @@ public sealed class DownloaderTests
         Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> handler)
         => new(new FakeHandler(handler));
 
+    /// <summary>
+    /// Builds a client that handles HEAD + range GETs for a byte array, returning
+    /// correct 206 slices.  Used by tests that just need a working range server.
+    /// </summary>
+    private static HttpClient MakeRangeCapableClient(byte[] data)
+        => MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head)
+                return RangeHeadResponse(data.Length);
+
+            var r    = request.Headers.Range!.Ranges.Single();
+            int from = (int)r.From!.Value;
+            int to   = (int)r.To!.Value;
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            {
+                Content = new ByteArrayContent(data[from..(to + 1)])
+            };
+        });
+
+    private static HttpResponseMessage RangeHeadResponse(long contentLength)
+    {
+        var h = new HttpResponseMessage(HttpStatusCode.OK);
+        h.Headers.AcceptRanges.Add("bytes");
+        h.Content = new ByteArrayContent(Array.Empty<byte>());
+        h.Content.Headers.ContentLength = contentLength;
+        return h;
+    }
+
     private static string TempFilePath() =>
         Path.Combine(Path.GetTempPath(), $"dm_test_{Guid.NewGuid():N}.bin");
 
@@ -361,6 +539,43 @@ public sealed class DownloaderTests
         {
             length = 0;
             return false; // returning false suppresses the Content-Length header
+        }
+    }
+
+    /// <summary>
+    /// A stream whose ReadAsync never returns — it blocks until the CancellationToken
+    /// is cancelled.  Simulates a stalled connection so we can test pause behaviour
+    /// without a real slow server.
+    /// </summary>
+    private sealed class BlockingStream : Stream
+    {
+        public override bool CanRead  => true;
+        public override bool CanSeek  => false;
+        public override bool CanWrite => false;
+        public override long Length   => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override void  Flush() { }
+        public override int   Read(byte[] buffer, int offset, int count) => 0;
+        public override long  Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void  SetLength(long value)                 => throw new NotSupportedException();
+        public override void  Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override async Task<int> ReadAsync(
+            byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            return 0;
+        }
+
+        public override async ValueTask<int> ReadAsync(
+            Memory<byte> buffer, CancellationToken ct = default)
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+            return 0;
         }
     }
 
