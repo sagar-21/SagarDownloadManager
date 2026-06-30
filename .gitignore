@@ -341,6 +341,12 @@ __pycache__/
 DM.App/tools/ffmpeg.exe
 DM.App/tools/ffprobe.exe
 DM.App/tools/yt-dlp.exe
+**/tools/ffmpeg.exe
+**/tools/ffprobe.exe
+**/tools/yt-dlp.exe
+
+# Publish output — build artifact, not source
+publish_out/
 
 # Tabs Studio
 *.tss
