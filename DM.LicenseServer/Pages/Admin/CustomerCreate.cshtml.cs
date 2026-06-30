@@ -30,7 +30,8 @@ public class CustomerCreateModel : PageModel
                 Input.Name!, Input.Email!, Input.Country, Input.Notes));
             return Redirect("/admin/customers");
         }
-        catch (Exception ex) when (ex.Message.Contains("UNIQUE"))
+        catch (Microsoft.EntityFrameworkCore.DbUpdateException ex)
+            when (ex.InnerException is Npgsql.PostgresException pg && pg.SqlState == "23505")
         {
             Error = "A customer with that email already exists.";
             return Page();
