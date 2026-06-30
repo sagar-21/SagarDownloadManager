@@ -1,3 +1,5 @@
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+
 using System.Threading.RateLimiting;
 using DM.LicenseServer.Data;
 using DM.LicenseServer.Services;
