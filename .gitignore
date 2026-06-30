@@ -337,6 +337,11 @@ __pycache__/
 # tools/**
 # !tools/packages.config
 
+# Large tool binaries — too big for GitHub (>100MB); download separately
+DM.App/tools/ffmpeg.exe
+DM.App/tools/ffprobe.exe
+DM.App/tools/yt-dlp.exe
+
 # Tabs Studio
 *.tss
 
