@@ -1,0 +1,12 @@
+DM.App/
+DM.Core/
+DM.Tests/
+tools/
+**/bin/
+**/obj/
+**/.git/
+**/.vs/
+DM.LicenseServer/keys/
+DM.LicenseServer/licensedb.sqlite
+*.user
+.env

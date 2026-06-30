@@ -1,0 +1,68 @@
+@page "/admin/customers"
+@model DM.LicenseServer.Pages.Admin.CustomersModel
+@{ ViewData["Title"] = "Customers"; ViewData["Nav"] = "customers"; }
+
+<div class="ls-topbar">
+  <div class="ls-topbar-title">Customers</div>
+  <div style="display:flex;gap:10px">
+    <a href="/admin/customers/create" class="ls-btn ls-btn-primary">+ New Customer</a>
+  </div>
+</div>
+
+<div class="ls-content">
+  <form method="get" class="ls-filter">
+    <div class="ls-search-wrap">
+      <span class="ls-search-icon">🔍</span>
+      <input class="ls-search-input" type="text" name="q" value="@Model.Q"
+             placeholder="Search name, email, country…"/>
+    </div>
+    <button type="submit" class="ls-btn ls-btn-ghost">Search</button>
+    @if (!string.IsNullOrEmpty(Model.Q))
+    {
+      <a href="/admin/customers" class="ls-btn ls-btn-ghost">Clear</a>
+    }
+  </form>
+
+  <div class="ls-card">
+    <div class="ls-table-wrap">
+      <table class="ls-table">
+        <thead><tr>
+          <th>Name</th><th>Email</th><th>Country</th><th>Licenses</th><th>Created</th><th></th>
+        </tr></thead>
+        <tbody>
+          @foreach (var c in Model.Customers)
+          {
+            var active  = c.Licenses.Count(l => l.Status == LicenseStatus.Active);
+            var total   = c.Licenses.Count;
+            <tr>
+              <td class="td-name">@c.Name</td>
+              <td class="td-muted">@c.Email</td>
+              <td class="td-muted">@(string.IsNullOrEmpty(c.Country) ? "—" : c.Country)</td>
+              <td>
+                @if (total == 0)
+                {
+                  <span class="td-muted">none</span>
+                }
+                else
+                {
+                  <span class="ls-pill @(active > 0 ? "pill-active" : "pill-expired")">
+                    <span class="ls-pill-dot" style="background:@(active > 0 ? "var(--success)" : "var(--text-3)")"></span>
+                    @active active / @total total
+                  </span>
+                }
+              </td>
+              <td class="td-muted" style="font-size:12px">@c.CreatedAt.ToString("yyyy-MM-dd")</td>
+              <td><a href="/admin/licenses?customerId=@c.Id" class="ls-btn ls-btn-ghost ls-btn-sm">Licenses →</a></td>
+            </tr>
+          }
+          @if (!Model.Customers.Any())
+          {
+            <tr><td colspan="6" style="text-align:center;color:var(--text-3);padding:28px">
+              @(string.IsNullOrEmpty(Model.Q) ? "No customers yet. Add one to get started." : "No customers match your search.")
+            </td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>

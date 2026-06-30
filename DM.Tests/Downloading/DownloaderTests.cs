@@ -7,6 +7,12 @@ namespace DM.Tests.Downloading;
 
 public sealed class DownloaderTests
 {
+    private static readonly JsonSerializerOptions CamelCaseJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented        = true,
+    };
+
     // ── Happy path ─────────────────────────────────────────────────────────
 
     [Fact]
@@ -322,8 +328,7 @@ public sealed class DownloaderTests
             Assert.True(File.Exists(statePath), "State file must survive a pause");
 
             var stateJson = await File.ReadAllTextAsync(statePath);
-            var state = JsonSerializer.Deserialize<DownloadState>(stateJson,
-                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase })!;
+            var state = JsonSerializer.Deserialize<DownloadState>(stateJson, CamelCaseJson)!;
 
             Assert.Equal("https://fake/big.bin", state.Url);
             Assert.Equal(size, state.TotalBytes);
@@ -390,8 +395,7 @@ public sealed class DownloaderTests
                     new SegmentState { Index = 1, StartByte = half, EndByte = size - 1, BytesCompleted = resume1 }
                 ]
             };
-            File.WriteAllText(statePath, JsonSerializer.Serialize(savedState,
-                new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+            File.WriteAllText(statePath, JsonSerializer.Serialize(savedState, CamelCaseJson));
 
             // ── Resume ──────────────────────────────────────────────────────
             await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
@@ -413,6 +417,320 @@ public sealed class DownloaderTests
             Assert.False(File.Exists(statePath));
         }
         finally { TryDelete(dest); TryDelete(statePath); }
+    }
+
+    // ── HTTP/2, connection pooling, RAM buffer ─────────────────────────────
+
+    [Fact]
+    public void CreateOptimizedHttpClient_SetsHttp2DefaultsAndPoolSize()
+    {
+        var settings = new EngineSettings { MaxConnectionsPerFile = 4 };
+        using var client = Downloader.CreateOptimizedHttpClient(settings);
+
+        Assert.Equal(HttpVersion.Version20,                client.DefaultRequestVersion);
+        Assert.Equal(HttpVersionPolicy.RequestVersionOrLower, client.DefaultVersionPolicy);
+    }
+
+    [Fact]
+    public async Task Http2_SegmentRequestsAdvertiseVersionPreference()
+    {
+        const int size = 2 * 1024 * 1024;
+        var data = new byte[size];
+        var capturedVersions = new System.Collections.Concurrent.ConcurrentBag<Version>();
+
+        using var client = MakeClient((request, _) =>
+        {
+            capturedVersions.Add(request.Version);
+            if (request.Method == HttpMethod.Head) return RangeHeadResponse(size);
+            var r    = request.Headers.Range!.Ranges.Single();
+            int from = (int)r.From!.Value, to = (int)r.To!.Value;
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            { Content = new ByteArrayContent(data[from..(to + 1)]) };
+        });
+
+        var settings = new EngineSettings { MaxConnectionsPerFile = 2, AutoTuneConnections = false };
+        var dest = TempFilePath();
+
+        try
+        {
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+            // HEAD probe + two segment GETs must all request HTTP/2.
+            Assert.All(capturedVersions, v => Assert.Equal(HttpVersion.Version20, v));
+        }
+        finally { TryDelete(dest); }
+    }
+
+    [Theory]
+    [InlineData(1)]   // minimal channel: back-pressure on every chunk
+    [InlineData(16)]  // large channel: absorbs bursts
+    public async Task RamBuffer_VariousChannelSizes_WritesCorrectOutput(int ramBufferChunks)
+    {
+        const int size = 2 * 1024 * 1024;
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        using var client = MakeRangeCapableClient(expected);
+        var settings = new EngineSettings
+        {
+            MaxConnectionsPerFile = 2,
+            AutoTuneConnections   = false,
+            RamBufferChunks       = ramBufferChunks,
+        };
+        var dest = TempFilePath();
+
+        try
+        {
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+        }
+        finally { TryDelete(dest); }
+    }
+
+    [Fact]
+    public async Task RamBuffer_CancellationDuringPipe_NoPooledBufferLeak()
+    {
+        // Verifies that cancelling while the channel has in-flight buffers
+        // does not deadlock and does not throw an unhandled exception
+        // (ArrayPool return is done in the finally cleanup path).
+        const int size = 4 * 1024 * 1024;
+
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head) return RangeHeadResponse(size);
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            { Content = new StreamContent(new BlockingStream()) };
+        });
+
+        var settings = new EngineSettings
+        {
+            MaxConnectionsPerFile = 2,
+            RetryCount            = 0,
+            RamBufferChunks       = 4,
+        };
+        var dest = TempFilePath();
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+
+        try
+        {
+            var ex = await Assert.ThrowsAsync<DownloadException>(
+                () => new Downloader(client, settings).DownloadAsync(
+                    "https://fake/big.bin", dest, ct: cts.Token));
+            Assert.Equal(DownloadFailureReason.Cancelled, ex.Reason);
+        }
+        finally { TryDelete(dest); TryDelete(Downloader.GetStatePath(dest)); }
+    }
+
+    // ── Bug-fix regressions ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Resume_DestinationFileDeleted_RedownloadsEntireFile_NotCorrupt()
+    {
+        // State file records partial progress but the destination was deleted.
+        // Before the fix, segments with nonzero BytesCompleted would issue Range
+        // requests starting mid-segment; the "already done" prefix stayed as zeros
+        // → silent file corruption.  After the fix, BytesCompleted is reset to 0
+        // when the file is absent, so every segment downloads from its start byte.
+        const int size = 4 * 1024 * 1024;
+        const int half = size / 2;
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        using var client = MakeRangeCapableClient(expected);
+        var settings  = new EngineSettings { MaxConnectionsPerFile = 2, RetryCount = 0 };
+        var dest      = TempFilePath();
+        var statePath = Downloader.GetStatePath(dest);
+
+        try
+        {
+            // Write a state file that claims partial progress but leave NO destination file.
+            var savedState = new DownloadState
+            {
+                Url             = "https://fake/big.bin",
+                DestinationPath = dest,
+                TotalBytes      = size,
+                Segments        =
+                [
+                    new SegmentState { Index = 0, StartByte = 0,    EndByte = half - 1, BytesCompleted = half / 2 },
+                    new SegmentState { Index = 1, StartByte = half, EndByte = size - 1, BytesCompleted = half / 4 },
+                ]
+            };
+            File.WriteAllText(statePath, JsonSerializer.Serialize(savedState, CamelCaseJson));
+
+            Assert.False(File.Exists(dest));
+
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+            Assert.False(File.Exists(statePath));
+        }
+        finally { TryDelete(dest); TryDelete(statePath); }
+    }
+
+    [Fact]
+    public async Task IoError_DuringSegmentWrite_IsNotRetried()
+    {
+        // Verifies that DownloadException(IoError) is excluded from the retry loop.
+        // The destination file is pre-allocated and held open with FileShare.None,
+        // so the segment's FileStream.Open throws IOException (sharing violation)
+        // at exactly the right code path inside DownloadSegmentAsync — not during
+        // the pre-allocation step that runs before any workers start.
+        const int size = 2 * 1024 * 1024;
+        var data = new byte[size];
+
+        int getCount = 0;
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head) return RangeHeadResponse(size);
+            Interlocked.Increment(ref getCount);
+            var r    = request.Headers.Range!.Ranges.Single();
+            int from = (int)r.From!.Value, to = (int)r.To!.Value;
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            { Content = new ByteArrayContent(data[from..(to + 1)]) };
+        });
+
+        var settings = new EngineSettings
+        {
+            MaxConnectionsPerFile = 2,
+            AutoTuneConnections   = false,
+            RetryCount            = 5,   // without fix: up to 6 × 2 = 12 GETs
+            RetryDelay            = TimeSpan.FromMilliseconds(1),
+        };
+
+        var dest      = TempFilePath();
+        var statePath = Downloader.GetStatePath(dest);
+
+        try
+        {
+            // Pre-allocate the destination so the engine skips its own pre-allocation
+            // (File.Exists == true), then keep it locked exclusively. The engine's
+            // segment writers open with FileShare.ReadWrite — a sharing violation fires.
+            // exclusiveLock is disposed (and the file released) before the finally runs.
+            await using var exclusiveLock = new FileStream(
+                dest, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+            exclusiveLock.SetLength(size);
+
+            var ex = await Assert.ThrowsAsync<DownloadException>(
+                () => new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest));
+
+            Assert.Equal(DownloadFailureReason.IoError, ex.Reason);
+            // With fix: 1 GET per segment, no retries → getCount ≤ 2.
+            // Without fix: up to 6 attempts × 2 segments = 12 GETs.
+            Assert.True(getCount <= 2, $"IoError must not be retried; got {getCount} GET(s)");
+        }
+        finally
+        {
+            TryDelete(dest);
+            TryDelete(statePath);
+        }
+    }
+
+    // ── Work-stealing, auto-tune, adaptive retry ──────────────────────────
+
+    [Fact]
+    public async Task WorkStealing_OverPartitionedChunks_AllChunksDownloadedCorrectly()
+    {
+        // 4 MB file with only 2 connections, but MinChunkBytes = 256 KB.
+        // CalculateChunks: targetChunkSize = max(256KB, 4MB/(2×4)) = max(256KB, 512KB) = 512KB
+        //                  count = max(2, ceil(4MB/512KB)) = 8
+        // Each worker dequeues 4 chunks on average — work-stealing via queue.
+        const int size = 4 * 1024 * 1024;
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        int rangeRequests = 0;
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head) return RangeHeadResponse(size);
+            Interlocked.Increment(ref rangeRequests);
+            var r    = request.Headers.Range!.Ranges.Single();
+            int from = (int)r.From!.Value, to = (int)r.To!.Value;
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            { Content = new ByteArrayContent(expected[from..(to + 1)]) };
+        });
+
+        var settings = new EngineSettings
+        {
+            MaxConnectionsPerFile = 2,
+            AutoTuneConnections   = false,
+            MinChunkBytes         = 256 * 1024,
+        };
+        var dest = TempFilePath();
+
+        try
+        {
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+            // 8 chunks → 8 Range requests; more than the 2-connection count proves
+            // each worker downloaded multiple chunks from the shared queue.
+            Assert.Equal(8, rangeRequests);
+        }
+        finally { TryDelete(dest); }
+    }
+
+    [Fact]
+    public async Task AutoTune_CompletesCorrectly_WhenStartingWithFewerConnections()
+    {
+        // Start with 1 connection, allow tuner to ramp up to 4.
+        // Fast tuneInterval ensures the gate releases before the download finishes.
+        const int size = 4 * 1024 * 1024;
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        using var client = MakeRangeCapableClient(expected);
+        var settings = new EngineSettings
+        {
+            MaxConnectionsPerFile     = 4,
+            InitialConnectionsPerFile = 1,
+            AutoTuneConnections       = true,
+            AutoTuneInterval          = TimeSpan.FromMilliseconds(20),
+            MinChunkBytes             = 512 * 1024,
+        };
+        var dest = TempFilePath();
+
+        try
+        {
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+        }
+        finally { TryDelete(dest); }
+    }
+
+    [Fact]
+    public async Task AdaptiveRetry_RespectsRetryDelayMax_AndCompletesWithJitter()
+    {
+        const int size = 2 * 1024 * 1024;
+        var expected = new byte[size];
+        Random.Shared.NextBytes(expected);
+
+        int getCount = 0;
+        using var client = MakeClient((request, _) =>
+        {
+            if (request.Method == HttpMethod.Head) return RangeHeadResponse(size);
+            // First 2 GETs fail; subsequent succeed.
+            if (Interlocked.Increment(ref getCount) <= 2)
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            var r    = request.Headers.Range!.Ranges.Single();
+            int from = (int)r.From!.Value, to = (int)r.To!.Value;
+            return new HttpResponseMessage(HttpStatusCode.PartialContent)
+            { Content = new ByteArrayContent(expected[from..(to + 1)]) };
+        });
+
+        var settings = new EngineSettings
+        {
+            MaxConnectionsPerFile = 2,
+            RetryCount            = 3,
+            RetryDelay            = TimeSpan.FromMilliseconds(5),
+            RetryDelayMax         = TimeSpan.FromMilliseconds(20), // cap well below exponential ceiling
+        };
+        var dest = TempFilePath();
+
+        try
+        {
+            await new Downloader(client, settings).DownloadAsync("https://fake/big.bin", dest);
+            Assert.Equal(expected, await File.ReadAllBytesAsync(dest));
+        }
+        finally { TryDelete(dest); }
     }
 
     // ── Error cases ────────────────────────────────────────────────────────

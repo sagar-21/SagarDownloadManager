@@ -1,0 +1,236 @@
+@page "/admin/licenses/{id:guid}"
+@model DM.LicenseServer.Pages.Admin.LicenseDetailModel
+@using DM.LicenseServer.Models
+@{ ViewData["Title"] = "License"; ViewData["Nav"] = "licenses"; }
+
+@if (Model.License is null)
+{
+  <div class="ls-topbar"><div class="ls-topbar-title">License Not Found</div></div>
+  <div class="ls-content"><p style="color:var(--text-2)">That license does not exist.</p></div>
+  return;
+}
+
+@functions {
+  string PillClass(LicenseStatus s) => s switch {
+    LicenseStatus.Active    => "pill-active",
+    LicenseStatus.Suspended => "pill-suspended",
+    LicenseStatus.Revoked   => "pill-revoked",
+    LicenseStatus.Expired   => "pill-expired",
+    _ => "pill-expired"
+  };
+  string DotColor(LicenseStatus s) => s switch {
+    LicenseStatus.Active    => "var(--success)",
+    LicenseStatus.Suspended => "var(--warning)",
+    LicenseStatus.Revoked   => "var(--danger)",
+    _                       => "var(--text-3)"
+  };
+  string HeartbeatColor(DateTime last)
+  {
+    var diff = DateTime.UtcNow - last;
+    if (diff.TotalHours < 1) return "var(--success)";
+    if (diff.TotalDays  < 1) return "var(--text-2)";
+    return "var(--warning)";
+  }
+}
+
+<div class="ls-topbar">
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/admin/licenses" class="ls-btn ls-btn-ghost ls-btn-sm">← Licenses</a>
+    <div class="ls-topbar-title">@Model.License.Key</div>
+    <span class="ls-pill @PillClass(Model.License.Status)">
+      <span class="ls-pill-dot" style="background:@DotColor(Model.License.Status)"></span>
+      @Model.License.Status
+    </span>
+  </div>
+
+  @if (!string.IsNullOrEmpty(Model.Flash))
+  {
+    <div style="font-size:12.5px;color:var(--success)">✓ @Model.Flash</div>
+  }
+</div>
+
+<div class="ls-content">
+
+  @if (!string.IsNullOrEmpty(Model.Error))
+  {
+    <div class="ls-alert ls-alert-danger">@Model.Error</div>
+  }
+
+  <!-- Header card -->
+  <div class="ls-card" style="margin-bottom:16px">
+    <div style="padding:18px 22px;display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start">
+      <div>
+        <div style="font-family:var(--mono);font-size:20px;font-weight:600;color:var(--accent);letter-spacing:.07em;margin-bottom:10px">
+          @Model.License.Key
+        </div>
+        <div style="display:flex;gap:24px;flex-wrap:wrap">
+          <div>
+            <div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">Customer</div>
+            <div style="font-size:13.5px;margin-top:3px">@Model.License.Customer?.Name</div>
+            <div style="font-size:12px;color:var(--text-3)">@Model.License.Customer?.Email</div>
+          </div>
+          <div>
+            <div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">Plan</div>
+            <div style="font-size:13.5px;margin-top:3px">@Model.License.Plan</div>
+          </div>
+          <div>
+            <div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">Devices</div>
+            <div style="font-size:13.5px;margin-top:3px;font-variant-numeric:tabular-nums">
+              @Model.Devices.Count(d => d.Status == DeviceStatus.Active) / @Model.License.MaxDevices used
+            </div>
+          </div>
+          <div>
+            <div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">Issued</div>
+            <div style="font-size:13.5px;margin-top:3px">@Model.License.IssuedAt.ToString("yyyy-MM-dd")</div>
+          </div>
+          <div>
+            <div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)">Expires</div>
+            <div style="font-size:13.5px;margin-top:3px;@(Model.License.ExpiresAt.HasValue && Model.License.ExpiresAt.Value <= DateTime.UtcNow.AddDays(30) ? "color:var(--warning)" : "")">
+              @(Model.License.ExpiresAt.HasValue ? Model.License.ExpiresAt.Value.ToString("yyyy-MM-dd") : "Never")
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        @if (Model.License.Status == LicenseStatus.Active)
+        {
+          <form method="post" asp-page-handler="SetStatus">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="status" value="Suspended"/>
+            <button type="submit" class="ls-btn ls-btn-warning">⏸ Suspend</button>
+          </form>
+          <form method="post" asp-page-handler="SetStatus"
+                onsubmit="return confirm('Revoke this license? This cannot be undone.')">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="status" value="Revoked"/>
+            <button type="submit" class="ls-btn ls-btn-danger">✕ Revoke</button>
+          </form>
+        }
+        @if (Model.License.Status is LicenseStatus.Suspended or LicenseStatus.Revoked)
+        {
+          <form method="post" asp-page-handler="SetStatus">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="status" value="Active"/>
+            <button type="submit" class="ls-btn ls-btn-success">↺ Reactivate</button>
+          </form>
+        }
+      </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(Model.License.Notes))
+    {
+      <div style="padding:12px 22px;border-top:1px solid var(--border);font-size:12.5px;color:var(--text-2)">
+        📝 @Model.License.Notes
+      </div>
+    }
+  </div>
+
+  <!-- Tab nav -->
+  <div class="ls-tabs">
+    <a class="ls-tab @(Model.Tab == "devices" ? "active" : "")"
+       href="/admin/licenses/@Model.License.Id?tab=devices">
+      Devices (@Model.Devices.Count(d => d.Status == DeviceStatus.Active))
+    </a>
+    <a class="ls-tab @(Model.Tab == "log" ? "active" : "")"
+       href="/admin/licenses/@Model.License.Id?tab=log">
+      Activity Log (@Model.Logs.Count)
+    </a>
+  </div>
+
+  @if (Model.Tab == "devices")
+  {
+    <div class="ls-card">
+      <div class="ls-table-wrap">
+        <table class="ls-table">
+          <thead><tr>
+            <th>Hardware Fingerprint</th><th>Machine</th><th>OS</th>
+            <th>First Seen</th><th>Last Heartbeat</th><th>Status</th><th></th>
+          </tr></thead>
+          <tbody>
+            @foreach (var d in Model.Devices)
+            {
+              <tr>
+                <td class="td-fp">@d.HardwareFingerprint</td>
+                <td class="td-name">@d.MachineName</td>
+                <td class="td-muted">@d.OperatingSystem</td>
+                <td class="td-muted" style="font-size:12px">@d.FirstSeenAt.ToString("yyyy-MM-dd")</td>
+                <td style="font-size:12px;color:@HeartbeatColor(d.LastSeenAt)">
+                  ● @((DateTime.UtcNow - d.LastSeenAt).TotalMinutes < 2
+                    ? "just now"
+                    : d.LastSeenAt.ToString("yyyy-MM-dd HH:mm"))
+                </td>
+                <td>
+                  <span class="ls-pill @(d.Status == DeviceStatus.Active ? "pill-active" : "pill-expired")">
+                    <span class="ls-pill-dot" style="background:@(d.Status == DeviceStatus.Active ? "var(--success)" : "var(--text-3)")"></span>
+                    @d.Status
+                  </span>
+                </td>
+                <td>
+                  @if (d.Status == DeviceStatus.Active)
+                  {
+                    <form method="post" asp-page-handler="DeactivateDevice">
+                      @Html.AntiForgeryToken()
+                      <input type="hidden" name="deviceId" value="@d.Id"/>
+                      <button type="submit" class="ls-btn ls-btn-ghost ls-btn-sm">Deactivate</button>
+                    </form>
+                  }
+                  else
+                  {
+                    <form method="post" asp-page-handler="ReactivateDevice">
+                      @Html.AntiForgeryToken()
+                      <input type="hidden" name="deviceId" value="@d.Id"/>
+                      <button type="submit" class="ls-btn ls-btn-success ls-btn-sm">↺ Reactivate</button>
+                    </form>
+                  }
+                </td>
+              </tr>
+            }
+            @if (!Model.Devices.Any())
+            {
+              <tr><td colspan="7" style="text-align:center;color:var(--text-3);padding:28px">
+                No devices have activated this license yet.
+              </td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  }
+  else
+  {
+    <div class="ls-card">
+      <div class="ls-table-wrap">
+        <table class="ls-table">
+          <thead><tr>
+            <th>Time (UTC)</th><th>Event</th><th>IP Address</th><th>Notes</th>
+          </tr></thead>
+          <tbody>
+            @foreach (var log in Model.Logs)
+            {
+              <tr>
+                <td class="td-muted" style="font-size:12px;white-space:nowrap">@log.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                <td>
+                  <span class="ls-pill @(log.Event == ActivationEvent.Activated ? "pill-active"
+                    : log.Event == ActivationEvent.Revoked ? "pill-revoked"
+                    : log.Event == ActivationEvent.Suspended ? "pill-suspended"
+                    : "pill-expired")"
+                        style="font-size:11px">
+                    @log.Event
+                  </span>
+                </td>
+                <td class="td-fp">@log.IpAddress</td>
+                <td class="td-muted">@log.Notes</td>
+              </tr>
+            }
+            @if (!Model.Logs.Any())
+            {
+              <tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:28px">No log entries.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+  }
+</div>

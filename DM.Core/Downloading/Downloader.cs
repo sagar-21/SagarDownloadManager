@@ -1,6 +1,13 @@
-using DM.Core.Settings;
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
+using System.Threading.Channels;
+using DM.Core.RateLimiting;
+using DM.Core.Settings;
 
 namespace DM.Core.Downloading;
 
@@ -21,6 +28,8 @@ public sealed class Downloader
     private const double ProgressIntervalSecs  = 0.25;             // 4 progress reports / second
     private const double StateSaveIntervalSecs = 3.0;              // how often .dmstate is flushed
     private const long   MultiSegmentThreshold = 1L * 1024 * 1024; // 1 MB minimum for multi-segment
+    private const int    ChunkGranularity      = 4;                // target chunks = maxConns × this
+    private const double AutoTuneGrowthThreshold = 0.10;           // 10% speed increase to add a conn
 
     private static readonly JsonSerializerOptions StateJsonOptions = new()
     {
@@ -28,13 +37,19 @@ public sealed class Downloader
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
-    private readonly HttpClient     _http;
-    private readonly EngineSettings _settings;
+    private readonly HttpClient              _http;
+    private readonly EngineSettings          _settings;
+    private readonly TokenBucketRateLimiter? _globalLimiter;
+    private readonly TokenBucketRateLimiter? _perLimiter;
 
-    public Downloader(HttpClient http, EngineSettings? settings = null)
+    public Downloader(HttpClient http, EngineSettings? settings = null,
+        TokenBucketRateLimiter? globalLimiter = null,
+        TokenBucketRateLimiter? perLimiter    = null)
     {
-        _http     = http;
-        _settings = settings ?? new EngineSettings();
+        _http          = http;
+        _settings      = settings ?? new EngineSettings();
+        _globalLimiter = globalLimiter;
+        _perLimiter    = perLimiter;
     }
 
     // ── State file helpers (public so DownloadEngine can query / clean up) ─
@@ -51,6 +66,39 @@ public sealed class Downloader
     /// </summary>
     public static void DeleteState(string destinationPath) =>
         TryDeleteFile(GetStatePath(destinationPath));
+
+    // ── HTTP client factory ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns an <see cref="HttpClient"/> tuned for parallel segment downloads:
+    /// HTTP/2 preferred with graceful HTTP/1.1 fallback, connection pool sized
+    /// to the number of parallel segments, and keep-alive connections reused
+    /// across all segments of a file.
+    ///
+    /// Pass the result into the <see cref="Downloader"/> constructor.
+    /// The caller owns the client and must dispose it.
+    /// </summary>
+    public static HttpClient CreateOptimizedHttpClient(EngineSettings? settings = null)
+    {
+        var s = settings ?? new EngineSettings();
+        var handler = new SocketsHttpHandler
+        {
+            // Allow more than one TCP connection to the same H2 server so that
+            // parallel Range requests are not serialised onto a single connection.
+            EnableMultipleHttp2Connections = true,
+            // Size the pool to the max number of simultaneous connections per file
+            // plus a small headroom for the HEAD probe.
+            MaxConnectionsPerServer        = s.MaxConnectionsPerFile + 2,
+            PooledConnectionLifetime       = TimeSpan.FromMinutes(10),
+            PooledConnectionIdleTimeout    = TimeSpan.FromMinutes(1),
+        };
+        return new HttpClient(handler)
+        {
+            Timeout                = s.ConnectionTimeout,
+            DefaultRequestVersion  = HttpVersion.Version20,
+            DefaultVersionPolicy   = HttpVersionPolicy.RequestVersionOrLower,
+        };
+    }
 
     // ── Public entry point ─────────────────────────────────────────────────
 
@@ -96,7 +144,11 @@ public sealed class Downloader
 
     private async Task<ServerCapabilities> ProbeAsync(string url, CancellationToken ct)
     {
-        using var req = new HttpRequestMessage(HttpMethod.Head, url);
+        using var req = new HttpRequestMessage(HttpMethod.Head, url)
+        {
+            Version       = HttpVersion.Version20,
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+        };
         using var res = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
 
         if (!res.IsSuccessStatusCode)
@@ -107,7 +159,7 @@ public sealed class Downloader
         return new ServerCapabilities(supportsRanges && contentLength > 0, contentLength);
     }
 
-    // ── Step 2a: multi-segment with state persistence ──────────────────────
+    // ── Step 2a: multi-segment with work-stealing queue and auto-tune ─────────
 
     private async Task MultiSegmentDownloadAsync(
         string url,
@@ -117,17 +169,18 @@ public sealed class Downloader
         CancellationToken ct)
     {
         string statePath = GetStatePath(destinationPath);
-
-        // Load saved state (resume) or create fresh state (new download).
         DownloadState state = await LoadOrCreateStateAsync(
             url, destinationPath, totalBytes, statePath, ct);
 
-        int segCount = state.Segments.Length;
-
-        // Pre-allocate the file only when starting fresh.
-        // On resume the file already exists with the previously downloaded bytes intact.
         if (!File.Exists(destinationPath))
         {
+            // State file survived but destination is gone (user deleted partial file,
+            // or crash between state write and SetLength).  Stale BytesCompleted values
+            // would cause segments to skip re-downloading their prefixes, leaving zeros
+            // in those ranges.  Reset all progress so every segment starts fresh.
+            foreach (var seg in state.Segments)
+                seg.BytesCompleted = 0;
+
             var dir = Path.GetDirectoryName(destinationPath);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
             await using var prealloc = new FileStream(
@@ -135,75 +188,131 @@ public sealed class Downloader
             prealloc.SetLength(totalBytes);
         }
 
-        // bytesCompleted[i] = total bytes done for segment i across all sessions.
-        // Seeded from state so the aggregate progress starts from where we left off.
         var bytesCompleted = state.Segments.Select(s => s.BytesCompleted).ToArray();
 
-        using var segCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        // Over-partitioned chunk queue — work-stealing is implicit: a fast worker
+        // simply dequeues the next pending chunk rather than sitting idle.
+        var queue = new ConcurrentQueue<int>(
+            Enumerable.Range(0, state.Segments.Length)
+                      .Where(i => !state.Segments[i].IsComplete));
 
-        var tasks = new Task[segCount];
-        for (int i = 0; i < segCount; i++)
+        using var segCts    = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        // workerCts gates the semaphore; cancelled by the last active worker (success)
+        // or by segCts propagation (error / user cancel).
+        using var workerCts = CancellationTokenSource.CreateLinkedTokenSource(segCts.Token);
+
+        int maxConns     = _settings.MaxConnectionsPerFile;
+        int initialConns = _settings.AutoTuneConnections
+            ? Math.Clamp(_settings.InitialConnectionsPerFile, 1, maxConns)
+            : maxConns;
+
+        // Gate controls how many workers run concurrently.
+        // Auto-tuner calls Release() to wake dormant workers one at a time.
+        using var gate = new SemaphoreSlim(initialConns, maxConns);
+
+        async Task RunWorkerAsync()
         {
-            var idx             = i;                        // closure capture
-            var seg             = state.Segments[i];
-            var initialCompleted = seg.BytesCompleted;     // cross-session baseline
+            try   { await gate.WaitAsync(workerCts.Token); }
+            catch (OperationCanceledException) { return; }
 
-            if (seg.IsComplete)
+            while (queue.TryDequeue(out int segIdx))
             {
-                tasks[idx] = Task.CompletedTask;           // skip already-finished segments
-                continue;
+                var seg              = state.Segments[segIdx];
+                var initialCompleted = seg.BytesCompleted;
+
+                await DownloadSegmentWithRetryAsync(
+                    segIdx, seg.StartByte, seg.ResumeFromByte, seg.EndByte,
+                    url, destinationPath,
+                    sessionBytes => Volatile.Write(ref bytesCompleted[segIdx],
+                                                   initialCompleted + sessionBytes),
+                    segCts.Token);
             }
 
-            tasks[idx] = DownloadSegmentWithRetryAsync(
-                segmentIndex:    idx,
-                startByte:       seg.StartByte,
-                resumeFromByte:  seg.ResumeFromByte,       // = StartByte + BytesCompleted
-                endByte:         seg.EndByte,
-                url:             url,
-                destinationPath: destinationPath,
-                // onProgress receives session-only bytes; add baseline for the running total.
-                onProgress: sessionBytes =>
-                    Volatile.Write(ref bytesCompleted[idx], initialCompleted + sessionBytes),
-                ct: segCts.Token);
+            // Queue drained — unblock any dormant workers still waiting at the gate.
+            workerCts.Cancel(throwOnFirstException: false);
         }
 
-        // Progress reporter: sums bytesCompleted[] every 250 ms.
+        // Pre-spawn all potential workers. Only initialConns pass the gate right away;
+        // the rest block until the auto-tuner releases slots or work finishes.
+        var workerTasks = Enumerable.Range(0, maxConns)
+            .Select(_ => RunWorkerAsync())
+            .ToArray();
+
         using var reportCts = CancellationTokenSource.CreateLinkedTokenSource(segCts.Token);
         var reportTask = progress is null
             ? Task.CompletedTask
             : ReportAggregateProgressAsync(bytesCompleted, totalBytes, progress, reportCts.Token);
 
-        // State persistence loop: flushes .dmstate every StateSaveIntervalSecs.
-        // On cancel/pause, its finally block writes one last snapshot before returning.
         using var persistCts = CancellationTokenSource.CreateLinkedTokenSource(segCts.Token);
         var persistTask = PersistStateLoopAsync(
             state, bytesCompleted, statePath,
             TimeSpan.FromSeconds(StateSaveIntervalSecs), persistCts.Token);
 
+        using var tuneCts = CancellationTokenSource.CreateLinkedTokenSource(segCts.Token);
+        var tuneTask = (_settings.AutoTuneConnections && initialConns < maxConns)
+            ? AutoTuneConnectionsAsync(gate, bytesCompleted, maxConns, initialConns, tuneCts.Token)
+            : Task.CompletedTask;
+
         try
         {
-            await Task.WhenAll(tasks);
+            await Task.WhenAll(workerTasks);
         }
         catch
         {
             await segCts.CancelAsync();
-            await Task.WhenAll(tasks.Select(t => t.ContinueWith(_ => { }, TaskScheduler.Default)));
+            await Task.WhenAll(workerTasks.Select(t => t.ContinueWith(_ => { }, TaskScheduler.Default)));
             throw;
         }
         finally
         {
-            // Stop persist loop — its own finally writes the final snapshot so the
-            // state file reflects the exact pause/stop point.
+            await tuneCts.CancelAsync();
+            await tuneTask.ContinueWith(_ => { }, TaskScheduler.Default);
+
             await persistCts.CancelAsync();
-            await persistTask;                                 // wait for final save
+            await persistTask;
 
             await reportCts.CancelAsync();
             await reportTask.ContinueWith(_ => { }, TaskScheduler.Default);
         }
 
-        // Only reachable on full success — remove state file and report 100%.
         TryDeleteFile(statePath);
         progress?.Report(new DownloadProgress(totalBytes, totalBytes, SpeedBytesPerSecond: 0));
+    }
+
+    // ── Auto-tune: ramps up connections while throughput is growing ────────────
+
+    private async Task AutoTuneConnectionsAsync(
+        SemaphoreSlim gate, long[] bytesCompleted,
+        int maxConns, int activeConns, CancellationToken ct)
+    {
+        long   prevTotal = 0;
+        double lastSpeed = 0;
+
+        try
+        {
+            while (activeConns < maxConns)
+            {
+                await Task.Delay(_settings.AutoTuneInterval, ct);
+
+                long currentTotal = 0;
+                for (int i = 0; i < bytesCompleted.Length; i++)
+                    currentTotal += Volatile.Read(ref bytesCompleted[i]);
+
+                double intervalSpeed = (currentTotal - prevTotal) / _settings.AutoTuneInterval.TotalSeconds;
+
+                // First sample has no baseline — always try to grow.
+                // After that, grow only when speed is still increasing.
+                if (lastSpeed == 0 || intervalSpeed > lastSpeed * (1.0 + AutoTuneGrowthThreshold))
+                {
+                    gate.Release();
+                    activeConns++;
+                }
+
+                prevTotal = currentTotal;
+                lastSpeed = intervalSpeed;
+            }
+        }
+        catch (OperationCanceledException) { }
     }
 
     // ── State management ───────────────────────────────────────────────────
@@ -234,7 +343,7 @@ public sealed class Downloader
 
         // Fresh download: compute segments and write the initial state file immediately
         // so even a very early crash leaves a recoverable .dmstate on disk.
-        var ranges  = CalculateSegments(totalBytes, _settings.MaxConnectionsPerFile);
+        var ranges  = CalculateChunks(totalBytes, _settings.MaxConnectionsPerFile, _settings.MinChunkBytes);
         var state   = new DownloadState
         {
             Url             = url,
@@ -312,12 +421,14 @@ public sealed class Downloader
         {
             if (attempt > 0)
             {
-                var delay = TimeSpan.FromMilliseconds(
-                    _settings.RetryDelay.TotalMilliseconds * (1 << (attempt - 1)));
+                // Full jitter: multiply by [0.5, 1.0) so concurrent retrying segments
+                // stagger their requests instead of thundering-herding the server.
+                double jitter = 0.5 + Random.Shared.NextDouble() * 0.5;
+                double rawMs  = _settings.RetryDelay.TotalMilliseconds * (1 << (attempt - 1)) * jitter;
+                var    delay  = TimeSpan.FromMilliseconds(
+                    Math.Min(rawMs, _settings.RetryDelayMax.TotalMilliseconds));
                 await Task.Delay(delay, ct);
 
-                // Reset session counter to 0 — the closure adds initialCompleted back,
-                // so bytesCompleted[idx] snaps back to the cross-session baseline.
                 onProgress(0);
             }
 
@@ -327,8 +438,11 @@ public sealed class Downloader
                     segmentIndex, resumeFromByte, endByte, url, destinationPath, onProgress, ct);
                 return;
             }
-            catch (DownloadException ex) when (ex.Reason is not DownloadFailureReason.Cancelled)
+            catch (DownloadException ex) when (ex.Reason is not DownloadFailureReason.Cancelled
+                                                          and not DownloadFailureReason.IoError)
             {
+                // IoError (disk full, write failure) is not a transient network condition;
+                // retrying would waste bandwidth and always fail the same way.
                 lastEx = ex;
             }
         }
@@ -368,8 +482,13 @@ public sealed class Downloader
         Action<long> onProgress,
         CancellationToken ct)
     {
-        using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(resumeFromByte, endByte);
+        using var req = new HttpRequestMessage(HttpMethod.Get, url)
+        {
+            // Prefer HTTP/2; fall back to HTTP/1.1 transparently.
+            Version       = HttpVersion.Version20,
+            VersionPolicy = HttpVersionPolicy.RequestVersionOrLower,
+        };
+        req.Headers.Range = new RangeHeaderValue(resumeFromByte, endByte);
 
         HttpResponseMessage res;
         try
@@ -401,13 +520,16 @@ public sealed class Downloader
             try
             {
                 await using var body = await res.Content.ReadAsStreamAsync(ct);
+                // bufferSize:1 suppresses FileStream's internal kernel buffer; the channel
+                // already buffers data in pooled arrays so double-buffering wastes ~80 KB
+                // of kernel memory per open segment with no throughput benefit.
                 await using var file = new FileStream(
                     destinationPath, FileMode.Open, FileAccess.Write,
-                    FileShare.ReadWrite, BufferSize, useAsync: true);
+                    FileShare.ReadWrite, bufferSize: 1, useAsync: true);
 
-                // Seek to the exact byte where writing should continue.
                 file.Seek(resumeFromByte, SeekOrigin.Begin);
-                await WriteWithProgressAsync(body, file, onProgress, ct);
+                await PipeSegmentAsync(body, file, _settings.RamBufferChunks, onProgress,
+                    _globalLimiter, _perLimiter, ct);
             }
             catch (OperationCanceledException ex)
             {
@@ -482,7 +604,7 @@ public sealed class Downloader
                     progress.Report(new DownloadProgress(bytes, totalBytes, (bytes - lastBytes) / delta));
                     lastAt    = now;
                     lastBytes = bytes;
-                }, ct);
+                }, _globalLimiter, _perLimiter, ct);
 
                 progress?.Report(new DownloadProgress(bytesReceived, totalBytes, 0));
             }
@@ -502,7 +624,10 @@ public sealed class Downloader
 
     private static async Task WriteWithProgressAsync(
         Stream source, Stream destination,
-        Action<long> onProgress, CancellationToken ct)
+        Action<long> onProgress,
+        TokenBucketRateLimiter? globalLimiter,
+        TokenBucketRateLimiter? perLimiter,
+        CancellationToken ct)
     {
         var  buffer       = new byte[BufferSize];
         long bytesWritten = 0;
@@ -510,8 +635,132 @@ public sealed class Downloader
         int read;
         while ((read = await source.ReadAsync(buffer, ct)) > 0)
         {
+            if (globalLimiter is not null) await globalLimiter.WaitAsync(read, ct);
+            if (perLimiter    is not null) await perLimiter.WaitAsync(read, ct);
             await destination.WriteAsync(buffer.AsMemory(0, read), ct);
             bytesWritten += read;
+            onProgress(bytesWritten);
+        }
+    }
+
+    // ── RAM-buffered pipe (network → channel → disk) ───────────────────────
+
+    /// <summary>
+    /// Pipes <paramref name="source"/> to <paramref name="destination"/> through a
+    /// bounded channel of pooled byte arrays, decoupling network reads from disk writes.
+    ///
+    /// MEMORY SAFETY — every rented buffer is returned to <see cref="ArrayPool{T}.Shared"/>:
+    ///   • Happy path : by <see cref="DrainChannelAsync"/> after each successful write.
+    ///   • Error/cancel: by the catch block after both tasks settle, via a drain loop on
+    ///                   any items still sitting in the channel.
+    ///
+    /// EXCEPTION FIDELITY — if both fill and drain fault, both exceptions are surfaced:
+    ///   • Single fault  → original exception re-thrown with original stack trace preserved.
+    ///   • Double fault  → <see cref="AggregateException"/> so neither cause is silently lost.
+    ///   • Both cancel   → <see cref="OperationCanceledException"/> re-thrown as-is.
+    /// </summary>
+    private static async Task PipeSegmentAsync(
+        Stream source, Stream destination,
+        int channelSlots, Action<long> onProgress,
+        TokenBucketRateLimiter? globalLimiter, TokenBucketRateLimiter? perLimiter,
+        CancellationToken ct)
+    {
+        var channel = Channel.CreateBounded<(byte[] Buffer, int Count)>(
+            new BoundedChannelOptions(channelSlots)
+            {
+                SingleReader = true,
+                SingleWriter = true,
+                FullMode     = BoundedChannelFullMode.Wait,
+            });
+
+        using var pipeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+        var fillTask  = FillChannelAsync(source, channel.Writer, pipeCts.Token);
+        var drainTask = DrainChannelAsync(channel.Reader, destination, onProgress,
+            globalLimiter, perLimiter, pipeCts.Token);
+
+        try
+        {
+            await Task.WhenAll(fillTask, drainTask);
+            // Success: channel is fully drained, no pooled buffers remain in it.
+        }
+        catch
+        {
+            // Cancel the surviving side and wait for it to exit before touching the
+            // channel — prevents use-after-return races on pooled buffers.
+            await pipeCts.CancelAsync();
+            await Task.WhenAll(
+                fillTask .ContinueWith(_ => { }, TaskScheduler.Default),
+                drainTask.ContinueWith(_ => { }, TaskScheduler.Default));
+
+            // Return any pooled buffers still in the channel (only reachable on error).
+            while (channel.Reader.TryRead(out var leftover))
+                ArrayPool<byte>.Shared.Return(leftover.Buffer);
+
+            // Surface all real exceptions; don't silently discard a concurrent fault.
+            var faults = new[] { fillTask, drainTask }
+                .Where(t => t.IsFaulted)
+                .SelectMany(t => t.Exception!.InnerExceptions)
+                .ToList();
+
+            if (faults.Count == 1) ExceptionDispatchInfo.Capture(faults[0]).Throw();
+            if (faults.Count > 1)  throw new AggregateException(faults);
+            throw; // both cancelled — re-throw the OperationCanceledException
+        }
+    }
+
+    private static async Task FillChannelAsync(
+        Stream source,
+        ChannelWriter<(byte[] Buffer, int Count)> writer,
+        CancellationToken ct)
+    {
+        try
+        {
+            while (true)
+            {
+                byte[] buf = ArrayPool<byte>.Shared.Rent(BufferSize);
+                try
+                {
+                    // Inner try owns buf from rent through channel enqueue.
+                    // If ReadAsync or WriteAsync throws (including cancellation while
+                    // the bounded channel is full), we return buf before propagating.
+                    int read = await source.ReadAsync(buf.AsMemory(0, BufferSize), ct);
+                    if (read == 0) { ArrayPool<byte>.Shared.Return(buf); break; }
+                    await writer.WriteAsync((buf, read), ct);
+                }
+                catch
+                {
+                    ArrayPool<byte>.Shared.Return(buf);
+                    throw;
+                }
+            }
+            writer.TryComplete();
+        }
+        catch (Exception ex)
+        {
+            // Fault the channel so DrainChannelAsync unblocks and sees the error.
+            writer.TryComplete(ex);
+            throw;
+        }
+    }
+
+    private static async Task DrainChannelAsync(
+        ChannelReader<(byte[] Buffer, int Count)> reader,
+        Stream destination,
+        Action<long> onProgress,
+        TokenBucketRateLimiter? globalLimiter,
+        TokenBucketRateLimiter? perLimiter,
+        CancellationToken ct)
+    {
+        long bytesWritten = 0;
+        await foreach (var (buf, count) in reader.ReadAllAsync(ct))
+        {
+            if (globalLimiter is not null) await globalLimiter.WaitAsync(count, ct);
+            if (perLimiter    is not null) await perLimiter.WaitAsync(count, ct);
+            try   { await destination.WriteAsync(buf.AsMemory(0, count), ct); }
+            finally { ArrayPool<byte>.Shared.Return(buf); }
+
+            bytesWritten += count;
             onProgress(bytesWritten);
         }
     }
@@ -548,21 +797,32 @@ public sealed class Downloader
         catch (OperationCanceledException) { }
     }
 
-    // ── Segment calculation ────────────────────────────────────────────────
+    // ── Chunk calculation ──────────────────────────────────────────────────
 
-    private static (long Start, long End)[] CalculateSegments(long totalBytes, int count)
+    /// <summary>
+    /// Divides <paramref name="totalBytes"/> into over-partitioned chunks.
+    /// Using ChunkGranularity × maxConns target chunks means a fast worker that
+    /// finishes its first chunk early can dequeue more — equivalent to work-stealing.
+    /// The count is also floored at maxConns so every connection always has work on
+    /// small files where minChunkBytes would otherwise yield fewer chunks than workers.
+    /// </summary>
+    private static (long Start, long End)[] CalculateChunks(
+        long totalBytes, int maxConns, long minChunkBytes)
     {
-        var  segs    = new (long Start, long End)[count];
-        long segSize = totalBytes / count;
+        long targetChunkSize = Math.Max(minChunkBytes,
+            totalBytes / ((long)maxConns * ChunkGranularity));
+        int count = Math.Max(maxConns,
+            (int)Math.Ceiling((double)totalBytes / targetChunkSize));
 
+        long chunkSize = totalBytes / count;
+        var  chunks    = new (long Start, long End)[count];
         for (int i = 0; i < count; i++)
         {
-            long start = i * segSize;
-            long end   = (i == count - 1) ? totalBytes - 1 : start + segSize - 1;
-            segs[i]    = (start, end);
+            long start = i * chunkSize;
+            long end   = (i == count - 1) ? totalBytes - 1 : start + chunkSize - 1;
+            chunks[i]  = (start, end);
         }
-
-        return segs;
+        return chunks;
     }
 
     private static void TryDeleteFile(string path)

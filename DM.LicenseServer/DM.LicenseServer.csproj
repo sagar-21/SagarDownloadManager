@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>DM.LicenseServer</RootNamespace>
+    <AssemblyName>DM.LicenseServer</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- EF Core — SQLite (default) -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.0" />
+    <!-- EF Core — PostgreSQL (swap via config) -->
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.3" />
+    <!-- EF tooling (CLI migrations) — dev-only -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <!-- JWT creation and verification -->
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.4.0" />
+    <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.4.0" />
+  </ItemGroup>
+
+  <!-- Exclude the GenerateKeys sub-tool from the main project compilation -->
+  <ItemGroup>
+    <Compile Remove="tools\**" />
+    <Content Remove="tools\**" />
+    <EmbeddedResource Remove="tools\**" />
+    <None Remove="tools\**" />
+  </ItemGroup>
+
+  <!--
+    Rate limiting, cookie auth, and Razor Pages are all part of
+    Microsoft.NET.Sdk.Web in .NET 7+ — no extra packages needed.
+  -->
+
+</Project>

@@ -1,0 +1,89 @@
+@page "/admin/activity"
+@model DM.LicenseServer.Pages.Admin.ActivityModel
+@using DM.LicenseServer.Models
+@{ ViewData["Title"] = "Activity Log"; ViewData["Nav"] = "activity"; }
+
+<div class="ls-topbar">
+  <div class="ls-topbar-title">Activity Log</div>
+</div>
+
+<div class="ls-content">
+
+  <!-- Filter bar -->
+  <form method="get" class="ls-filter" style="margin-bottom:16px">
+    <div class="ls-search-wrap">
+      <span class="ls-search-icon">🔍</span>
+      <input class="ls-search-input" name="q" value="@Model.Q"
+             placeholder="Search license key or IP…" autocomplete="off"/>
+    </div>
+    <select class="ls-filter-select" name="evt" onchange="this.form.submit()">
+      <option value="">All Events</option>
+      @foreach (var e in Enum.GetValues<ActivationEvent>())
+      {
+        <option value="@e" selected="@(Model.EventFilter == e)">@e</option>
+      }
+    </select>
+    <button type="submit" class="ls-btn ls-btn-ghost">Filter</button>
+    @if (!string.IsNullOrEmpty(Model.Q) || Model.EventFilter.HasValue)
+    {
+      <a href="/admin/activity" class="ls-btn ls-btn-ghost">Clear</a>
+    }
+  </form>
+
+  <div class="ls-card">
+    <div class="ls-card-header">
+      <div class="ls-card-title">Recent Events</div>
+      <div style="font-size:12px;color:var(--text-3)">Showing last @Model.Logs.Count entries</div>
+    </div>
+    <div class="ls-table-wrap">
+      <table class="ls-table">
+        <thead><tr>
+          <th>Time (UTC)</th><th>Event</th><th>License Key</th>
+          <th>IP Address</th><th>Notes</th>
+        </tr></thead>
+        <tbody>
+          @foreach (var log in Model.Logs)
+          {
+            <tr>
+              <td class="td-muted" style="font-size:12px;white-space:nowrap">
+                @log.OccurredAt.ToString("yyyy-MM-dd HH:mm:ss")
+              </td>
+              <td>
+                <span class="ls-pill @EventPillClass(log.Event)" style="font-size:11px">
+                  @log.Event
+                </span>
+              </td>
+              <td>
+                <a href="/admin/licenses/@log.LicenseId" class="td-key"
+                   style="text-decoration:none;font-family:var(--mono);font-size:12px;color:var(--accent)">
+                  @log.LicenseKey
+                </a>
+              </td>
+              <td class="td-fp">@log.IpAddress</td>
+              <td class="td-muted">@log.Notes</td>
+            </tr>
+          }
+          @if (!Model.Logs.Any())
+          {
+            <tr><td colspan="5" style="text-align:center;color:var(--text-3);padding:40px">
+              No activity found.
+            </td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+@functions {
+  string EventPillClass(ActivationEvent e) => e switch {
+    ActivationEvent.Activated    => "pill-active",
+    ActivationEvent.Reactivated  => "pill-active",
+    ActivationEvent.HeartbeatOk  => "pill-active",
+    ActivationEvent.Revoked      => "pill-revoked",
+    ActivationEvent.HeartbeatFailed => "pill-revoked",
+    ActivationEvent.Suspended    => "pill-suspended",
+    _                            => "pill-expired"
+  };
+}

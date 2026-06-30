@@ -1,0 +1,14 @@
+[PLACEHOLDER]
+Replace this file with the official MIT License text for WPF (dotnet/wpf).
+
+Source (raw):
+  https://raw.githubusercontent.com/dotnet/wpf/main/LICENSE.TXT
+
+Or browse:
+  https://github.com/dotnet/wpf/blob/main/LICENSE.TXT
+
+Steps:
+  1. Open the raw URL above in your browser
+  2. Select All → Copy
+  3. Paste here, replacing everything from "[PLACEHOLDER]" onward
+  4. Save

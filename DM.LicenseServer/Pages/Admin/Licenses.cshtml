@@ -1,0 +1,92 @@
+@page "/admin/licenses"
+@model DM.LicenseServer.Pages.Admin.LicensesModel
+@using DM.LicenseServer.Models
+@{ ViewData["Title"] = "Licenses"; ViewData["Nav"] = "licenses"; }
+
+@functions {
+    string PillClass(LicenseStatus s) => s switch {
+        LicenseStatus.Active    => "pill-active",
+        LicenseStatus.Suspended => "pill-suspended",
+        LicenseStatus.Revoked   => "pill-revoked",
+        LicenseStatus.Expired   => "pill-expired",
+        _                       => "pill-expired"
+    };
+    string DotColor(LicenseStatus s) => s switch {
+        LicenseStatus.Active    => "var(--success)",
+        LicenseStatus.Suspended => "var(--warning)",
+        LicenseStatus.Revoked   => "var(--danger)",
+        _                       => "var(--text-3)"
+    };
+}
+
+<div class="ls-topbar">
+  <div class="ls-topbar-title">Licenses</div>
+  <a href="/admin/licenses/create" class="ls-btn ls-btn-primary">+ New License</a>
+</div>
+
+<div class="ls-content">
+  <form method="get" class="ls-filter">
+    <div class="ls-search-wrap">
+      <span class="ls-search-icon">🔍</span>
+      <input class="ls-search-input" type="text" name="q" value="@Model.Q"
+             placeholder="Search by key, customer, email…"/>
+    </div>
+    <select class="ls-filter-select" name="status" onchange="this.form.submit()">
+      <option value="">All statuses</option>
+      @foreach (var s in Enum.GetValues<LicenseStatus>())
+      {
+        <option value="@s" selected="@(Model.StatusFilter == s)">@s</option>
+      }
+    </select>
+    <button type="submit" class="ls-btn ls-btn-ghost">Search</button>
+    @if (!string.IsNullOrEmpty(Model.Q) || Model.StatusFilter.HasValue)
+    {
+      <a href="/admin/licenses" class="ls-btn ls-btn-ghost">Clear</a>
+    }
+  </form>
+
+  <div class="ls-card">
+    <div class="ls-table-wrap">
+      <table class="ls-table">
+        <thead><tr>
+          <th>License Key</th><th>Customer</th><th>Plan</th>
+          <th>Status</th><th>Devices</th><th>Issued</th><th>Expires</th><th></th>
+        </tr></thead>
+        <tbody>
+          @foreach (var l in Model.Licenses)
+          {
+            <tr>
+              <td class="td-key">@l.Key</td>
+              <td>
+                <div class="td-name">@l.CustomerName</div>
+                <div style="font-size:11.5px;color:var(--text-3)">@l.CustomerEmail</div>
+              </td>
+              <td><span style="font-size:12px;color:var(--text-2)">@l.Plan</span></td>
+              <td>
+                <span class="ls-pill @PillClass(l.Status)">
+                  <span class="ls-pill-dot" style="background:@DotColor(l.Status)"></span>
+                  @l.Status
+                </span>
+              </td>
+              <td class="td-muted" style="font-variant-numeric:tabular-nums">
+                @l.ActiveDeviceCount / @l.MaxDevices
+              </td>
+              <td class="td-muted" style="font-size:12px">@l.IssuedAt.ToString("yyyy-MM-dd")</td>
+              <td class="td-muted" style="font-size:12px;@(l.ExpiresAt.HasValue && l.ExpiresAt.Value <= DateTime.UtcNow.AddDays(30) && l.Status == LicenseStatus.Active ? "color:var(--warning)" : "")">
+                @(l.ExpiresAt.HasValue ? l.ExpiresAt.Value.ToString("yyyy-MM-dd") : "—")
+              </td>
+              <td><a href="/admin/licenses/@l.Id" class="ls-btn ls-btn-ghost ls-btn-sm">View</a></td>
+            </tr>
+          }
+          @if (!Model.Licenses.Any())
+          {
+            <tr><td colspan="8" style="text-align:center;color:var(--text-3);padding:28px">
+              @(string.IsNullOrEmpty(Model.Q) && !Model.StatusFilter.HasValue
+                ? "No licenses yet." : "No licenses match your filters.")
+            </td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,14 @@
+[PLACEHOLDER]
+Replace this file with the official Unlicense text for yt-dlp.
+
+Source (raw):
+  https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/LICENSE
+
+Or browse:
+  https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE
+
+Steps:
+  1. Open the raw URL above in your browser
+  2. Select All → Copy
+  3. Paste here, replacing everything from "[PLACEHOLDER]" onward
+  4. Save

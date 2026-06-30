@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Obfuscar configuration for the release build.
+  https://docs.obfuscar.com/
+
+  Run AFTER dotnet publish, BEFORE installer compilation:
+      obfuscar.console scripts\obfuscar.xml
+
+  InPath / OutPath are set by Release.ps1 via /v:InPath=... /v:OutPath=...
+  so this file works correctly from any working directory.
+
+  Strategy
+  ────────
+  Obfuscate only the assemblies that contain IP worth protecting:
+    • DM.Core.dll       — download engine, queue logic
+    • DM.App.dll        — licensing code (DM.App.Licensing namespace)
+
+  SKIP obfuscation for namespaces that WPF resolves by string at runtime:
+    • DM.App.ViewModels.*   — {Binding PropertyName} in XAML
+    • DM.App.Views.*        — x:Class in XAML; DataContext assignments
+    • DM.App.Converters.*   — {StaticResource} keys
+    • DM.App.Controls.*     — XAML custom controls
+
+  If you add new ViewModels or Views, add SkipType entries below.
+-->
+<Obfuscator>
+
+  <!-- ── Paths ────────────────────────────────────────────────────────────── -->
+  <Var name="InPath"  value="publish\win-x64" />
+  <Var name="OutPath" value="publish\win-x64-obf" />
+
+  <!-- Log to a file so the release script can surface it on failure -->
+  <Var name="LogFile" value="publish\obfuscar.log" />
+
+  <!-- Keep public API visible (not needed for WinExe, but avoids spurious warnings) -->
+  <Var name="HidePrivateApi"          value="true" />
+  <Var name="RenameProperties"        value="true" />
+  <Var name="RenameEvents"            value="true" />
+  <Var name="RenameFields"            value="true" />
+  <!-- Do NOT rename public types referenced from XAML -->
+  <Var name="KeepPublicApi"           value="false" />
+  <!-- Obfuscate control flow as well as names -->
+  <Var name="UseUnicodeNames"         value="false" />
+  <Var name="RegenerateDebugInfo"     value="false" />
+
+  <!-- ── Assemblies to obfuscate ────────────────────────────────────────── -->
+
+  <Module file="$(InPath)\DM.Core.dll">
+    <!-- All types in DM.Core are internal implementation details -->
+  </Module>
+
+  <Module file="$(InPath)\DM.App.dll">
+    <!--
+      Skip entire namespaces that XAML binds to by name.
+      Add new ViewModel / View / Converter classes here as you create them.
+    -->
+
+    <!-- ViewModels: {Binding PropertyName} and RelayCommand method names -->
+    <SkipNamespace name="DM.App.ViewModels" />
+
+    <!-- Views: x:Class, code-behind event handlers -->
+    <SkipNamespace name="DM.App.Views" />
+
+    <!-- Converters: {StaticResource} key, IValueConverter.Convert signature -->
+    <SkipNamespace name="DM.App.Converters" />
+
+    <!-- Controls: UserControl subclasses referenced from XAML -->
+    <SkipNamespace name="DM.App.Controls" />
+
+    <!-- App entry point: Application.OnStartup, WPF App class -->
+    <SkipType name="DM.App.App" />
+
+    <!--
+      The licensing namespace IS obfuscated — it contains the JWT verification,
+      hardware fingerprint, and DPAPI storage logic worth protecting.
+      DM.App.Licensing is NOT in the skip list above.
+    -->
+  </Module>
+
+</Obfuscator>

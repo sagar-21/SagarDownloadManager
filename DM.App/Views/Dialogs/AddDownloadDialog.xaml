@@ -1,0 +1,222 @@
+<ui:FluentWindow x:Class="DM.App.Views.Dialogs.AddDownloadDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+        Title="Add Download"
+        Width="520" Height="570"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        WindowBackdropType="Mica"
+        ExtendsContentIntoTitleBar="True">
+
+    <Grid Margin="28,24,28,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><!-- 0: URL -->
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/><!-- 2: Save to -->
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/><!-- 4: After download -->
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/><!-- 6: Checksum panel -->
+            <RowDefinition Height="14"/>
+            <RowDefinition Height="Auto"/><!-- 8: Advanced expander -->
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/><!-- 10: Buttons -->
+        </Grid.RowDefinitions>
+
+        <!-- URL -->
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="URL" FontSize="12" Foreground="White" Opacity="0.65" Margin="0,0,0,6"/>
+            <ui:TextBox x:Name="UrlBox"
+                        PlaceholderText="https://example.com/file.zip  or  youtube.com/watch?v=…"
+                        KeyDown="Input_KeyDown"
+                        TextChanged="UrlBox_TextChanged"/>
+
+            <!-- Single-video panel — shown once formats are fetched for a non-playlist URL -->
+            <Border x:Name="VideoFormatPanel" Visibility="Collapsed"
+                    Background="#0FFFFFFF" CornerRadius="6" Padding="12,10" Margin="0,8,0,0">
+                <StackPanel>
+                    <ProgressBar x:Name="FormatLoadingBar"
+                                 IsIndeterminate="True" Height="2"
+                                 Visibility="Collapsed" Margin="0,0,0,6"
+                                 Background="Transparent"/>
+                    <TextBlock x:Name="VideoTitleText"
+                               FontSize="11" Foreground="White" Opacity="0.55"
+                               TextTrimming="CharacterEllipsis"
+                               Margin="0,0,0,8"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+                            <ui:SymbolIcon Symbol="Video24" FontSize="13" Foreground="#FF7EC8E3"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Format" FontSize="12" Foreground="White" Opacity="0.65"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <ComboBox x:Name="VideoFormatCombo" Grid.Column="1" SelectedIndex="0"/>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Playlist panel — shown when the URL resolves to a playlist -->
+            <Border x:Name="PlaylistPanel" Visibility="Collapsed"
+                    Background="#0FFFFFFF" CornerRadius="6" Padding="12,10" Margin="0,8,0,0">
+                <StackPanel>
+                    <ProgressBar x:Name="PlaylistLoadingBar"
+                                 IsIndeterminate="True" Height="2"
+                                 Visibility="Collapsed" Margin="0,0,0,6"
+                                 Background="Transparent"/>
+                    <TextBlock x:Name="PlaylistInfoText"
+                               FontSize="11" Foreground="#FF7EC8A0"
+                               TextTrimming="CharacterEllipsis"
+                               Margin="0,0,0,8"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0">
+                            <ui:SymbolIcon Symbol="PlayCircle24" FontSize="13" Foreground="#FF7EC8E3"
+                                           VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="Quality" FontSize="12" Foreground="White" Opacity="0.65"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+                        <ComboBox x:Name="PlaylistQualityCombo" Grid.Column="1" SelectedIndex="0">
+                            <ComboBoxItem>★  Best available (auto)</ComboBoxItem>
+                            <ComboBoxItem>1080p</ComboBoxItem>
+                            <ComboBoxItem>720p</ComboBoxItem>
+                            <ComboBoxItem>480p</ComboBoxItem>
+                            <ComboBoxItem>♪  Audio only (MP3)</ComboBoxItem>
+                        </ComboBox>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <!-- Save to -->
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="Save to" FontSize="12" Foreground="White" Opacity="0.65" Margin="0,0,0,6"/>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ui:TextBox x:Name="FolderBox" Grid.Column="0"
+                            PlaceholderText="Choose destination folder…"
+                            KeyDown="Input_KeyDown"/>
+                <ui:Button Grid.Column="2" Appearance="Secondary"
+                           Padding="12,0" Click="BrowseFolder_Click">
+                    <ui:SymbolIcon Symbol="FolderOpen24" FontSize="14"/>
+                </ui:Button>
+            </Grid>
+        </StackPanel>
+
+        <!-- After download -->
+        <StackPanel Grid.Row="4">
+            <TextBlock Text="After download" FontSize="12" Foreground="White"
+                       Opacity="0.65" Margin="0,0,0,6"/>
+            <ComboBox x:Name="ActionBox" SelectedIndex="0"
+                      SelectionChanged="ActionBox_Changed">
+                <ComboBoxItem>None</ComboBoxItem>
+                <ComboBoxItem>Show notification</ComboBoxItem>
+                <ComboBoxItem>Open file</ComboBoxItem>
+                <ComboBoxItem>Open folder</ComboBoxItem>
+                <ComboBoxItem>Verify checksum…</ComboBoxItem>
+            </ComboBox>
+        </StackPanel>
+
+        <!-- Checksum (shown when Verify is selected) -->
+        <StackPanel Grid.Row="6" x:Name="ChecksumPanel" Visibility="Collapsed">
+            <TextBlock Text="Expected checksum (MD5 or SHA-256)"
+                       FontSize="12" Foreground="White" Opacity="0.65" Margin="0,0,0,6"/>
+            <ui:TextBox x:Name="ChecksumBox"
+                        PlaceholderText="md5:abc123…  or  sha256:def456…"/>
+        </StackPanel>
+
+        <!-- Advanced overrides expander -->
+        <Expander Grid.Row="8" Foreground="White"
+                  Background="Transparent" BorderBrush="#1AFFFFFF" BorderThickness="0"
+                  Padding="0">
+            <Expander.Header>
+                <TextBlock Text="Advanced" FontSize="12" Foreground="White" Opacity="0.65"/>
+            </Expander.Header>
+            <Border Background="#12FFFFFF" CornerRadius="8" Padding="14,12" Margin="0,8,0,0">
+                <StackPanel>
+                    <!-- Connection count override -->
+                    <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="160"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="OverrideConnectionsCheck"
+                                  Content="Connections" Foreground="White"
+                                  VerticalAlignment="Center"
+                                  Checked="OverrideCheck_Changed"
+                                  Unchecked="OverrideCheck_Changed"/>
+                        <TextBox x:Name="ConnectionCountBox" Grid.Column="1"
+                                 Text="8" IsEnabled="False"
+                                 Background="#18FFFFFF" Foreground="White"
+                                 BorderBrush="#28FFFFFF" Padding="7,5"/>
+                    </Grid>
+
+                    <!-- Speed limit override -->
+                    <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="160"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="OverrideSpeedCheck"
+                                  Content="Speed limit" Foreground="White"
+                                  VerticalAlignment="Center"
+                                  Checked="OverrideCheck_Changed"
+                                  Unchecked="OverrideCheck_Changed"/>
+                        <TextBox x:Name="SpeedLimitBox" Grid.Column="1"
+                                 Text="0" IsEnabled="False"
+                                 Background="#18FFFFFF" Foreground="White"
+                                 BorderBrush="#28FFFFFF" Padding="7,5"/>
+                        <TextBlock Grid.Column="2" Text="KB/s"
+                                   Foreground="White" Opacity="0.50"
+                                   VerticalAlignment="Center" Margin="7,0,0,0" FontSize="12"/>
+                    </Grid>
+
+                    <!-- Video quality override -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="160"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="OverrideQualityCheck"
+                                  Content="Video quality" Foreground="White"
+                                  VerticalAlignment="Center"
+                                  Checked="OverrideCheck_Changed"
+                                  Unchecked="OverrideCheck_Changed"/>
+                        <ComboBox x:Name="VideoQualityCombo" Grid.Column="1"
+                                  SelectedIndex="3" IsEnabled="False">
+                            <ComboBoxItem>Best available</ComboBoxItem>
+                            <ComboBoxItem>4K (2160p)</ComboBoxItem>
+                            <ComboBoxItem>1440p</ComboBoxItem>
+                            <ComboBoxItem>1080p (or best)</ComboBoxItem>
+                            <ComboBoxItem>720p</ComboBoxItem>
+                            <ComboBoxItem>480p</ComboBoxItem>
+                            <ComboBoxItem>360p</ComboBoxItem>
+                            <ComboBoxItem>Audio only</ComboBoxItem>
+                        </ComboBox>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Expander>
+
+        <!-- Action buttons -->
+        <StackPanel Grid.Row="10" Orientation="Horizontal" HorizontalAlignment="Right">
+            <ui:Button Appearance="Secondary" Margin="0,0,8,0" Padding="20,8"
+                       Click="Cancel_Click">Cancel</ui:Button>
+            <ui:Button x:Name="OkBtn" Appearance="Primary" Padding="20,8"
+                       IsDefault="True" Click="Ok_Click">Start Download</ui:Button>
+        </StackPanel>
+    </Grid>
+
+</ui:FluentWindow>

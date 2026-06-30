@@ -1,0 +1,21 @@
+## Keys — NEVER commit the private key
+keys/signing.key
+keys/*.key
+keys/*.pem
+
+## SQLite databases
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+## Standard .NET
+bin/
+obj/
+*.user
+.vs/
+.vscode/
+*.suo
+
+## Logs
+logs/
+*.log

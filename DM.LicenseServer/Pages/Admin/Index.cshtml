@@ -1,0 +1,89 @@
+@page "/admin"
+@model DM.LicenseServer.Pages.Admin.IndexModel
+@{ ViewData["Title"] = "Dashboard"; ViewData["Nav"] = "dashboard"; }
+
+<div class="ls-topbar">
+  <div class="ls-topbar-title">Dashboard</div>
+</div>
+
+<div class="ls-content">
+
+  <div class="ls-stats">
+    <div class="ls-stat" style="border-top: 2px solid var(--accent)">
+      <div class="ls-stat-label">Customers</div>
+      <div class="ls-stat-value">@Model.TotalCustomers</div>
+      <div class="ls-stat-sub">total registered</div>
+    </div>
+    <div class="ls-stat" style="border-top: 2px solid var(--success)">
+      <div class="ls-stat-label">Active Licenses</div>
+      <div class="ls-stat-value">@Model.ActiveLicenses</div>
+      <div class="ls-stat-sub">of @Model.TotalLicenses issued</div>
+    </div>
+    <div class="ls-stat" style="border-top: 2px solid var(--info)">
+      <div class="ls-stat-label">Active Devices</div>
+      <div class="ls-stat-value">@Model.ActiveDevices</div>
+      <div class="ls-stat-sub">across all licenses</div>
+    </div>
+    <div class="ls-stat" style="border-top: 2px solid var(--warning)">
+      <div class="ls-stat-label">Expiring ≤30 days</div>
+      <div class="ls-stat-value @(Model.ExpiringSoon > 0 ? "text-warning" : "")">@Model.ExpiringSoon</div>
+      <div class="ls-stat-sub">need attention</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 360px;gap:16px">
+
+    <div class="ls-card">
+      <div class="ls-card-header">
+        <div class="ls-card-title">Recent Activations</div>
+        <a href="/admin/activity" class="text-accent" style="font-size:12px">View all →</a>
+      </div>
+      <div class="ls-table-wrap">
+        <table class="ls-table">
+          <thead><tr>
+            <th>License</th><th>Customer</th><th>Machine</th><th>Time</th>
+          </tr></thead>
+          <tbody>
+            @foreach (var log in Model.RecentActivations)
+            {
+              <tr>
+                <td class="td-key">@log.LicenseKey</td>
+                <td class="td-name">@log.CustomerName</td>
+                <td class="td-muted">@log.MachineName</td>
+                <td class="td-muted" style="font-size:11.5px;white-space:nowrap">@log.TimeAgo</td>
+              </tr>
+            }
+            @if (!Model.RecentActivations.Any())
+            {
+              <tr><td colspan="4" style="text-align:center;color:var(--text-3);padding:24px">No activations yet.</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="ls-card">
+      <div class="ls-card-header">
+        <div class="ls-card-title">Expiring Soon</div>
+      </div>
+      @foreach (var lic in Model.ExpiringSoonList)
+      {
+        <div style="padding:12px 18px;border-bottom:1px solid var(--border);display:flex;gap:10px;align-items:center">
+          <div style="flex:1">
+            <div style="font-size:12.5px;font-weight:500">@lic.CustomerName</div>
+            <div class="td-key" style="font-size:11px;margin-top:2px">@lic.Key</div>
+            <div style="font-size:11px;color:var(--warning);margin-top:2px">Expires @lic.ExpiresIn</div>
+          </div>
+          <a href="/admin/licenses/@lic.Id" class="ls-btn ls-btn-ghost ls-btn-sm">View</a>
+        </div>
+      }
+      @if (!Model.ExpiringSoonList.Any())
+      {
+        <div style="padding:20px;text-align:center;color:var(--text-3);font-size:13px">
+          No licenses expiring soon ✓
+        </div>
+      }
+    </div>
+
+  </div>
+</div>

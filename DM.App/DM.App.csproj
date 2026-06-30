@@ -6,14 +6,60 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Version — bump before every release; also update installer/setup.iss -->
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Company>Your Company Name</Company>
+    <Product>Sagar Download Manager</Product>
+    <Copyright>Copyright © 2025</Copyright>
+    <ApplicationIcon>Resources\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <!-- Release-build hardening: strip symbols, enable optimisations -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Optimize>true</Optimize>
+    <!-- Disable ReadyToRun when obfuscating — obfuscated IL + R2R native code
+         is mismatched, so the runtime would JIT anyway and R2R just wastes size. -->
+    <PublishReadyToRun>false</PublishReadyToRun>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="WPF-UI" Version="3.0.5" />
+    <PackageReference Include="System.Management" Version="9.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\DM.Core\DM.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="licenses\**\*" CopyToOutputDirectory="PreserveNewest"/>
+    <Resource Include="Resources\app.ico"/>
+  </ItemGroup>
+
+  <!-- Bundled third-party tools ─────────────────────────────────────────────
+       Place yt-dlp.exe and ffmpeg.exe in DM.App\tools\ before publishing.
+       The Condition prevents build failures on dev machines that haven't
+       downloaded the binaries yet.                                          -->
+  <ItemGroup>
+    <Content Include="tools\yt-dlp.exe"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest"
+             Condition="Exists('tools\yt-dlp.exe')"/>
+    <Content Include="tools\ffmpeg.exe"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest"
+             Condition="Exists('tools\ffmpeg.exe')"/>
+    <Content Include="tools\ffprobe.exe"
+             CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest"
+             Condition="Exists('tools\ffprobe.exe')"/>
   </ItemGroup>
 
 </Project>

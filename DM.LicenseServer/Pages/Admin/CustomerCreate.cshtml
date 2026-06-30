@@ -1,0 +1,55 @@
+@page "/admin/customers/create"
+@model DM.LicenseServer.Pages.Admin.CustomerCreateModel
+@{ ViewData["Title"] = "New Customer"; ViewData["Nav"] = "customers"; }
+
+<div class="ls-topbar">
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/admin/customers" class="ls-btn ls-btn-ghost ls-btn-sm">← Back</a>
+    <div class="ls-topbar-title">New Customer</div>
+  </div>
+</div>
+
+<div class="ls-content" style="max-width:540px">
+  <div class="ls-card" style="overflow:visible">
+    <div class="ls-card-header"><div class="ls-card-title">Customer Details</div></div>
+    <div style="padding:20px 22px">
+
+      @if (!string.IsNullOrEmpty(Model.Error))
+      {
+        <div class="ls-alert ls-alert-danger">@Model.Error</div>
+      }
+
+      <form method="post">
+        @Html.AntiForgeryToken()
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.Name">Name *</label>
+          <input class="ls-input" asp-for="Input.Name" placeholder="Jane Smith or Acme Corp" required/>
+          <span asp-validation-for="Input.Name" style="color:var(--danger);font-size:12px"></span>
+        </div>
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.Email">Email *</label>
+          <input class="ls-input" type="email" asp-for="Input.Email" placeholder="jane@example.com" required/>
+          <span asp-validation-for="Input.Email" style="color:var(--danger);font-size:12px"></span>
+        </div>
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.Country">Country</label>
+          <input class="ls-input" asp-for="Input.Country" placeholder="Germany"/>
+        </div>
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.Notes">Notes</label>
+          <textarea class="ls-textarea" asp-for="Input.Notes" rows="3"
+                    placeholder="Internal notes (not shown to customer)…" style="resize:vertical"></textarea>
+        </div>
+
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="ls-btn ls-btn-primary">Create Customer</button>
+          <a href="/admin/customers" class="ls-btn ls-btn-ghost">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

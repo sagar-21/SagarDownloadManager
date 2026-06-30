@@ -1,0 +1,18 @@
+[PLACEHOLDER]
+Replace this file with the official GNU Lesser General Public License v2.1 text for ffmpeg.
+
+IMPORTANT: ffmpeg must be the LGPL build (--enable-gpl is NOT used during compilation).
+The LGPL-licensed build is available at: https://ffmpeg.org/download.html
+(Look for "Windows builds" by BtbN or gyan.dev — both offer LGPL builds.)
+
+Source (raw LGPL-2.1 text):
+  https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt
+
+Or browse:
+  https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+Steps:
+  1. Open the raw URL above in your browser
+  2. Select All → Copy
+  3. Paste here, replacing everything from "[PLACEHOLDER]" onward
+  4. Save

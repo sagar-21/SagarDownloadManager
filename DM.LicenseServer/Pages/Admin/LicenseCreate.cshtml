@@ -1,0 +1,87 @@
+@page "/admin/licenses/create"
+@model DM.LicenseServer.Pages.Admin.LicenseCreateModel
+@{ ViewData["Title"] = "New License"; ViewData["Nav"] = "licenses"; }
+
+<div class="ls-topbar">
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/admin/licenses" class="ls-btn ls-btn-ghost ls-btn-sm">← Back</a>
+    <div class="ls-topbar-title">New License</div>
+  </div>
+</div>
+
+<div class="ls-content" style="max-width:560px">
+  <div class="ls-card" style="overflow:visible">
+    <div class="ls-card-header"><div class="ls-card-title">License Details</div></div>
+    <div style="padding:20px 22px">
+
+      @if (!string.IsNullOrEmpty(Model.Error))
+      {
+        <div class="ls-alert ls-alert-danger">@Model.Error</div>
+      }
+
+      <form method="post">
+        @Html.AntiForgeryToken()
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.CustomerId">Customer *</label>
+          <select class="ls-select" asp-for="Input.CustomerId" required>
+            <option value="">— Select a customer —</option>
+            @foreach (var c in Model.Customers)
+            {
+              <option value="@c.Id">@c.Name (@c.Email)</option>
+            }
+          </select>
+          @if (!Model.Customers.Any())
+          {
+            <div style="font-size:12px;color:var(--warning);margin-top:5px">
+              No customers yet. <a href="/admin/customers/create" style="color:var(--accent)">Create one first →</a>
+            </div>
+          }
+        </div>
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.Plan">Plan / Tier *</label>
+          <div style="display:flex;gap:8px">
+            @foreach (var plan in new[] { "Basic", "Pro", "Enterprise" })
+            {
+              <label style="flex:1;cursor:pointer">
+                <input type="radio" asp-for="Input.Plan" value="@plan" style="display:none"/>
+                <div class="plan-opt @(Model.Input.Plan == plan ? "plan-sel" : "")"
+                     style="border:1px solid @(Model.Input.Plan == plan ? "rgba(0,212,170,.4)" : "var(--border)");
+                            background:@(Model.Input.Plan == plan ? "var(--accent-dim)" : "transparent");
+                            border-radius:8px;padding:10px 12px;text-align:center;transition:.12s">
+                  <div style="font-weight:600;font-size:13px">@plan</div>
+                </div>
+              </label>
+            }
+          </div>
+        </div>
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.MaxDevices">Max Devices *</label>
+          <input class="ls-input" type="number" asp-for="Input.MaxDevices" min="1" max="1000" style="width:120px"/>
+        </div>
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.ExpiresAt">Expiry Date <span style="opacity:.5;font-weight:400">(leave blank for perpetual)</span></label>
+          <input class="ls-input" type="date" asp-for="Input.ExpiresAt" style="width:200px;color-scheme:dark"/>
+        </div>
+
+        <div class="ls-form-group">
+          <label class="ls-label" asp-for="Input.Notes">Notes</label>
+          <textarea class="ls-textarea" asp-for="Input.Notes" rows="3"
+                    placeholder="Payment reference, special terms…" style="resize:vertical"></textarea>
+        </div>
+
+        <div style="padding:12px 14px;background:var(--accent-dim);border:1px solid rgba(0,212,170,.15);border-radius:7px;font-size:12.5px;color:var(--text-2);margin-bottom:16px">
+          🔑 License key auto-generated on save: <span class="font-mono text-accent">DM@(DateTime.UtcNow.Year.ToString()[2..])-XXXX-XXXX-XXXX</span>
+        </div>
+
+        <div style="display:flex;gap:8px">
+          <button type="submit" class="ls-btn ls-btn-primary">Create License</button>
+          <a href="/admin/licenses" class="ls-btn ls-btn-ghost">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>

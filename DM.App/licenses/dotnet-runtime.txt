@@ -1,0 +1,14 @@
+[PLACEHOLDER]
+Replace this file with the official MIT License text for .NET Runtime.
+
+Source (raw):
+  https://raw.githubusercontent.com/dotnet/runtime/main/LICENSE.TXT
+
+Or browse:
+  https://github.com/dotnet/runtime/blob/main/LICENSE.TXT
+
+Steps:
+  1. Open the raw URL above in your browser
+  2. Select All → Copy
+  3. Paste here, replacing everything from "[PLACEHOLDER]" onward
+  4. Save
