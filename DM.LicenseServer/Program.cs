@@ -1,10 +1,10 @@
-AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
-
 using System.Threading.RateLimiting;
 using DM.LicenseServer.Data;
 using DM.LicenseServer.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
+
+AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
 
 // ── Cloud hosting: write RSA key files from environment variables ─────────────
 // Agar keys/ folder nahi hai (Railway, Render, Docker) to env vars se files
