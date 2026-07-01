@@ -24,6 +24,9 @@ public partial class App : Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        // Hide the main thread from user-mode debugger events before doing anything else.
+        AntiTamper.HardenThread();
+
         // Enforce single instance: if another copy is already running, exit quietly.
         // "Global\" prefix works across user-session boundaries (e.g. fast-user-switching).
         _singleInstanceMutex = new Mutex(true, @"Global\SagarDownloadManager_SingleInstance", out bool isFirst);

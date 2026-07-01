@@ -85,6 +85,24 @@ internal static class EncryptedStrings
     // DPAPI entropy salt — used by LicenseStore (adds per-app specificity to DPAPI)
     private static readonly byte[] _dpapiSaltCt = Encrypt("SagarDM-v1-license-store-2025");
 
+    // RSA public key PEM — XOR-obfuscated so it is not a trivially greppable/replaceable
+    // plain string. With IL-level string encryption from Obfuscar this becomes opaque at rest.
+    private static readonly byte[] _pubKeyCt = Encrypt(
+        "-----BEGIN PUBLIC KEY-----\n" +
+        "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAxPq+kdIb/Rj2NX0MNefD\n" +
+        "y3/BTejNbuY7vVQhrOBDCqGUeDPgpBgcuKpQpeCoFMnG85ZqH4IlzQdGS7vHTymI\n" +
+        "TULK7H97sUeCouatmPm7OPvRqKDEeVkSjh1ae1lUb2Yz1O4wxZNZaargPy0F4qNH\n" +
+        "PHfFqkhTxmABpM/4jnRK5SyY8Rl0mFTb4rKPyxt3tiihWBGEUqpRQ96ADkOdjDW5\n" +
+        "jPIy/t4LF2CFRgDn9goFfiwEbaW9nmKWqMTBIOq84LfWyhpqVKT8rG06ltDNE0oB\n" +
+        "3xtIF29njt8xh/NX6VYRwG3x86Yz8UiCrlzjUhbVzLnPKh7Qh3wdGGptL85EpT0d\n" +
+        "5xrTwynff3tyjUH8QyNrG206/qssnDrTolEC1ZMDLsih+26bHEsMY8FyA7l/TACc\n" +
+        "PZ3XTMBG1Ok9txIbrspBuxrjUFc/8IWlNmX4q1Hnb0xMtWPqvprDqEO1mqh83l1F\n" +
+        "BtOhVUzu+SFRBwhs5Hr58nfTj4hvW3eqSuw/LFrLXp8JlBdUgfZIlfi/1k3Neg1t\n" +
+        "/3R9R/nhaHBK1tWrwnTE6+l2VITg6hKlQ4Jo2C6f/LJqNwybPXSFovyWMFjtF6ec\n" +
+        "WmywZKmejzycAhavOuFRXJ6QXdO1zFxHgjmaSDwWhTh6ddo8laTAaRg25QV1SdhY\n" +
+        "mi39lRN8vlJUD/NVgdKMbukCAwEAAQ==\n" +
+        "-----END PUBLIC KEY-----");
+
     // ── Accessors ──────────────────────────────────────────────────────────────
 
     /// <summary>License server base URL.  Used by LicenseClient constructor.</summary>
@@ -92,6 +110,9 @@ internal static class EncryptedStrings
 
     /// <summary>Additional entropy passed to ProtectedData.Protect/Unprotect.</summary>
     internal static string DpapiSalt => Get(_dpapiSaltCt);
+
+    /// <summary>RSA-2048 public key PEM.  Used by LicenseTokenValidator.</summary>
+    internal static string PublicKey => Get(_pubKeyCt);
 
     // ── Build-time helper (used to generate the byte arrays above) ────────────
     //

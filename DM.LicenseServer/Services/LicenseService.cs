@@ -88,9 +88,11 @@ public sealed class LicenseService : ILicenseService
 
     public async Task<ActivateResult> ActivateAsync(ActivateRequest req, string ip)
     {
+        // Load all devices (no filtered include) — EF Core filtered includes can silently
+        // break FirstOrDefaultAsync on some Npgsql versions, returning null for existing rows.
         var license = await _db.Licenses
             .Include(l => l.Customer)
-            .Include(l => l.Devices.Where(d => d.Status == DeviceStatus.Active))
+            .Include(l => l.Devices)
             .FirstOrDefaultAsync(l => l.Key == req.LicenseKey);
 
         if (license is null)
@@ -113,13 +115,17 @@ public sealed class LicenseService : ILicenseService
             return ActivateResult.Fail("expired", "This license has expired.");
         }
 
+        // Filter active devices in memory (avoids the filtered-include query bug)
+        var activeDevices = license.Devices
+            .Where(d => d.Status == DeviceStatus.Active).ToList();
+
         // Abuse checks (device limit burst, rapid activations, known-bad fingerprint)
         var denyReason = await _abuse.CheckActivationAsync(license, req.Fingerprint, ip);
         if (denyReason is not null)
             return ActivateResult.Fail("abuse_detected", denyReason);
 
         // Check if this device is already registered on this license
-        var device = license.Devices.FirstOrDefault(
+        var device = activeDevices.FirstOrDefault(
             d => d.HardwareFingerprint == req.Fingerprint);
 
         if (device is not null)
@@ -132,7 +138,7 @@ public sealed class LicenseService : ILicenseService
         }
 
         // New device — enforce device limit
-        if (license.Devices.Count >= license.MaxDevices)
+        if (activeDevices.Count >= license.MaxDevices)
             return ActivateResult.Fail("device_limit",
                 $"Device limit reached ({license.MaxDevices} of {license.MaxDevices} slots used).");
 

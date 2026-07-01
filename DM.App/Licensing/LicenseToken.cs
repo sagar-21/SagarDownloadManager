@@ -32,49 +32,21 @@ internal sealed record LicenseInfo(
 /// </summary>
 internal static class LicenseTokenValidator
 {
-    // ── Public key ─────────────────────────────────────────────────────────────
-    //
-    // IMPORTANT: Replace this placeholder with the output of:
-    //   dotnet run --project DM.LicenseServer/tools/GenerateKeys
-    //
-    // The key printed to stdout (keys/signing.pub) goes here verbatim.
-    // The private key (keys/signing.key) must NEVER appear in client code.
-    //
-    private const string PublicKeyPem = """
-        -----BEGIN PUBLIC KEY-----
-        MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAxPq+kdIb/Rj2NX0MNefD
-        y3/BTejNbuY7vVQhrOBDCqGUeDPgpBgcuKpQpeCoFMnG85ZqH4IlzQdGS7vHTymI
-        TULK7H97sUeCouatmPm7OPvRqKDEeVkSjh1ae1lUb2Yz1O4wxZNZaargPy0F4qNH
-        PHfFqkhTxmABpM/4jnRK5SyY8Rl0mFTb4rKPyxt3tiihWBGEUqpRQ96ADkOdjDW5
-        jPIy/t4LF2CFRgDn9goFfiwEbaW9nmKWqMTBIOq84LfWyhpqVKT8rG06ltDNE0oB
-        3xtIF29njt8xh/NX6VYRwG3x86Yz8UiCrlzjUhbVzLnPKh7Qh3wdGGptL85EpT0d
-        5xrTwynff3tyjUH8QyNrG206/qssnDrTolEC1ZMDLsih+26bHEsMY8FyA7l/TACc
-        PZ3XTMBG1Ok9txIbrspBuxrjUFc/8IWlNmX4q1Hnb0xMtWPqvprDqEO1mqh83l1F
-        BtOhVUzu+SFRBwhs5Hr58nfTj4hvW3eqSuw/LFrLXp8JlBdUgfZIlfi/1k3Neg1t
-        /3R9R/nhaHBK1tWrwnTE6+l2VITg6hKlQ4Jo2C6f/LJqNwybPXSFovyWMFjtF6ec
-        WmywZKmejzycAhavOuFRXJ6QXdO1zFxHgjmaSDwWhTh6ddo8laTAaRg25QV1SdhY
-        mi39lRN8vlJUD/NVgdKMbukCAwEAAQ==
-        -----END PUBLIC KEY-----
-        """;
-
-    // Null when the placeholder above hasn't been replaced yet.
+    // Public key is stored via EncryptedStrings (XOR-obfuscated) so it is not
+    // a trivially greppable/replaceable plain string in the binary.
+    // With Obfuscar IL string encryption the plaintext never appears at rest.
     private static readonly RSA? _publicKey = TryLoadPublicKey();
 
     private static RSA? TryLoadPublicKey()
     {
         try
         {
+            var pem = EncryptedStrings.PublicKey;
             var rsa = RSA.Create();
-            rsa.ImportFromPem(PublicKeyPem);
+            rsa.ImportFromPem(pem);
             return rsa;
         }
-        catch
-        {
-            // Key not yet configured — all validation calls will return null,
-            // so the app shows the activation screen but activation won't work
-            // until a real key is embedded.
-            return null;
-        }
+        catch { return null; }
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────

@@ -40,6 +40,33 @@ internal sealed class LicenseClient : IDisposable
     {
         var body = new { licenseKey = key, fingerprint, machineName, operatingSystem = os };
         using var resp = await _http.PostAsJsonAsync("api/v1/activate", body, JsonOpts, ct);
+
+        // For error responses (4xx), the server returns {"error": "...", "detail": "..."}
+        // which doesn't map to ActivateResponse. Parse both shapes and return a unified record.
+        if (!resp.IsSuccessStatusCode)
+        {
+            try
+            {
+                using var doc = await JsonDocument.ParseAsync(
+                    await resp.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
+                var root    = doc.RootElement;
+                var detail  = root.TryGetProperty("detail", out var d) ? d.GetString() : null;
+                var errCode = root.TryGetProperty("error",  out var e) ? e.GetString() : null;
+                var msg     = detail ?? errCode switch
+                {
+                    "not_found"     => "License key not found.",
+                    "expired"       => "This license has expired.",
+                    "device_limit"  => "Device limit reached for this license.",
+                    "revoked"       => "This license has been revoked.",
+                    "suspended"     => "This license is currently suspended.",
+                    "blacklisted"   => "This installation has been blocked.",
+                    _               => "Activation failed. Please contact support.",
+                };
+                return new ActivateResponse(false, null, null, null, 0, null, null, msg);
+            }
+            catch { return null; }
+        }
+
         return await resp.Content.ReadFromJsonAsync<ActivateResponse>(JsonOpts, ct);
     }
 

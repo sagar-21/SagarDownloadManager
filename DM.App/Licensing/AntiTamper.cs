@@ -6,73 +6,9 @@ using System.Security.Cryptography;
 
 namespace DM.App.Licensing;
 
-/// <summary>
-/// Defense-in-depth anti-tamper checks.
-///
-/// ════════════════════════════════════════════════════════════════════
-/// HONEST ASSESSMENT OF EACH LAYER
-/// ════════════════════════════════════════════════════════════════════
-///
-/// Layer 1 — Assembly hash baseline
-///   Detects: hex-editor or IL patcher modification of the .exe.
-///   Does NOT detect: in-memory patching after the initial hash check.
-///   Action: queue an integrity report, force immediate heartbeat.
-///   Honest limit: an attacker can delete the stored baseline to reset it;
-///   the server's own hash tracking (KnownGoodHash) is the real check.
-///
-/// Layer 2 — Debugger detection (IsDebuggerPresent + CheckRemoteDebuggerPresent)
-///   Detects: standard debuggers attached before startup.
-///   Does NOT detect: debuggers that clear the IsDebugged PEB flag
-///   (ScyllaHide, x64dbg plugin mode, custom debuggers).
-///   Action: queue a soft report — do NOT lock the app, to avoid false
-///   positives from AV heuristic engines that use debugger APIs.
-///
-/// Layer 3 — Timing check
-///   Detects: single-step execution (debugger makes loops take 1000× longer).
-///   Does NOT detect: hardware breakpoints, out-of-process debugging.
-///   Action: soft flag only.
-///
-/// Layer 4 — Suspicious environment detection
-///   Detects: common RE environment variables and Wine.
-///   Does NOT detect: custom RE environments, VMs, automated test rigs.
-///   Action: soft flag only.
-///
-/// Layer 5 — EncryptedStrings for sensitive literals
-///   Prevents: trivial `strings` grep for the server URL or DPAPI salt.
-///   Does NOT prevent: memory inspection of a running process.
-///
-/// OVERALL GUARANTEES
-///   ✓ Makes a simple "nop the license check" patch insufficient — the
-///     download engine also needs the server-issued session key.
-///   ✓ Forces a server heartbeat on any detected modification, so the
-///     server can revoke within 6 hours.
-///   ✗ Does NOT prevent a skilled attacker using dnSpy, WinDbg, or a
-///     custom CLR host.
-///   ✗ All checks here can be bypassed by patching this class itself.
-///   The SERVER (via heartbeat + /report) is the definitive authority.
-///
-/// OBFUSCATOR RECOMMENDATION
-///   Apply at release time to raise the bar substantially:
-///
-///   Free / open source:
-///     Obfuscar — https://docs.obfuscar.com
-///       Use with scripts/obfuscar.xml (skip ViewModels/Views namespaces).
-///     ConfuserEx — https://github.com/yck1509/ConfuserEx
-///       Unmaintained but still effective for basic rename + flow obfuscation.
-///
-///   Paid (recommended):
-///     .NET Reactor   — https://www.eziriz.com — best balance of price and strength
-///     Eazfuscator.NET — https://www.gapotchenko.com/eazfuscator.net
-///     SmartAssembly  — https://www.red-gate.com/products/smartassembly/
-///     Dotfuscator Pro — https://www.preemptive.com/products/dotfuscator/
-///
-///   Apply in Release.ps1 AFTER `dotnet publish` and BEFORE `signtool`.
-///   Obfuscate only DM.App.dll and DM.Core.dll; skip ViewModels/Views (XAML binds by name).
-/// ════════════════════════════════════════════════════════════════════
-/// </summary>
 internal static class AntiTamper
 {
-    // ── Win32 imports ──────────────────────────────────────────────────────────
+    // ── Win32 / NT imports ─────────────────────────────────────────────────────
 
     [DllImport("kernel32.dll", SetLastError = true, ExactSpelling = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -80,27 +16,97 @@ internal static class AntiTamper
         IntPtr hProcess,
         [MarshalAs(UnmanagedType.Bool)] out bool debuggerPresent);
 
+    // int-sized output (ProcessDebugPort = 7, ProcessDebugFlags = 31)
     [DllImport("ntdll.dll", SetLastError = false)]
     private static extern int NtQueryInformationProcess(
         IntPtr processHandle, int processInformationClass,
         ref int processInformation, int processInformationLength,
         out int returnLength);
 
+    // PROCESS_BASIC_INFORMATION-sized output (class 0 — for parent PID)
+    [DllImport("ntdll.dll", EntryPoint = "NtQueryInformationProcess", SetLastError = false)]
+    private static extern int NtQueryInformationProcessBasic(
+        IntPtr processHandle, int processInformationClass,
+        ref ProcessBasicInfo processInformation, int processInformationLength,
+        out int returnLength);
+
+    // Kernel-mode debugger detection (SystemKernelDebuggerInformation = 35)
+    [DllImport("ntdll.dll", SetLastError = false)]
+    private static extern int NtQuerySystemInformation(
+        int systemInformationClass,
+        ref KernelDebuggerInfo systemInformation,
+        int systemInformationLength,
+        out int returnLength);
+
+    // Thread hiding — makes threads invisible to user-mode debugger events
+    [DllImport("ntdll.dll", SetLastError = false)]
+    private static extern int NtSetInformationThread(
+        IntPtr threadHandle, int threadInformationClass,
+        IntPtr threadInformation, int threadInformationLength);
+
+    [DllImport("kernel32.dll", ExactSpelling = true)]
+    private static extern IntPtr GetCurrentThread();
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessBasicInfo
+    {
+        public IntPtr ExitStatus;
+        public IntPtr PebBaseAddress;
+        public IntPtr AffinityMask;
+        public IntPtr BasePriority;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KernelDebuggerInfo
+    {
+        public byte KernelDebuggerEnabled;
+        public byte KernelDebuggerNotPresent;
+    }
+
+    // Known reverse-engineering tool process names
+    private static readonly HashSet<string> _reTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "dnSpy", "dnspy-x86", "dnspy64", "ILSpy", "dotPeek", "JustDecompile",
+        "x64dbg", "x32dbg", "OllyDbg", "OllyDbg110", "WinDbg", "windbg",
+        "ida", "ida64", "idaq", "idaq64",
+        "Ghidra", "ghidra",
+        "de4dot", "de4dot-x64",
+        "ProcessHacker", "SystemInformer",
+        "HxD", "010Editor", "CFF Explorer",
+    };
+
     // ── Main entry point ───────────────────────────────────────────────────────
 
     internal static TamperResult Check(StoredLicense? stored)
     {
-        bool debugger        = IsDebuggerAttached();
-        bool timingAnomaly   = DetectTimingAnomaly();
-        bool suspiciousEnv   = DetectSuspiciousEnvironment();
+        bool debugger         = IsDebuggerAttached();
+        bool timingAnomaly    = DetectTimingAnomaly();
+        bool suspiciousEnv    = DetectSuspiciousEnvironment();
+        bool vmDetected       = IsRunningInVm();
         bool assemblyModified = stored is not null && !AssemblyMatchesBaseline(stored);
 
         return new TamperResult(
             DebuggerDetected:  debugger,
             TimingAnomaly:     timingAnomaly,
             SuspiciousEnv:     suspiciousEnv,
+            VmDetected:        vmDetected,
             AssemblyModified:  assemblyModified
         );
+    }
+
+    // ── Thread hardening ───────────────────────────────────────────────────────
+    // Call once from App.OnStartup. Makes this thread invisible to user-mode
+    // debugger events (single-step, breakpoints, debug events stop working).
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    internal static void HardenThread()
+    {
+#if !DEBUG
+        try { NtSetInformationThread(GetCurrentThread(), 17 /* ThreadHideFromDebugger */, IntPtr.Zero, 0); }
+        catch { }
+#endif
     }
 
     // ── Layer 1: Assembly hash ─────────────────────────────────────────────────
@@ -119,51 +125,86 @@ internal static class AntiTamper
 
     internal static bool AssemblyMatchesBaseline(StoredLicense stored)
     {
-        if (stored.AssemblyHash is null) return true;   // no baseline — don't false-positive
+        if (stored.AssemblyHash is null) return true;
         var current = HashMainAssembly();
-        if (current is null)       return true;          // can't hash — don't false-positive
+        if (current is null) return true;
         return string.Equals(current, stored.AssemblyHash, StringComparison.OrdinalIgnoreCase);
     }
 
-    // ── Layer 2: Debugger presence ─────────────────────────────────────────────
+    // ── Layer 2: Debugger presence (6 independent vectors) ────────────────────
 
     internal static bool IsDebuggerAttached()
     {
 #if DEBUG
-        return false; // never fire in dev builds — developers attach debuggers legitimately
+        return false;
 #else
+        // Vector 1: managed API
         if (Debugger.IsAttached) return true;
 
+        // Vector 2: kernel32 — detects remote debuggers (Visual Studio attach, etc.)
         try
         {
             CheckRemoteDebuggerPresent(Process.GetCurrentProcess().Handle, out var remote);
             if (remote) return true;
         }
-        catch { /* P/Invoke failed — skip, don't false-positive */ }
+        catch { }
 
-        // NtQueryInformationProcess ProcessDebugPort (class 7) — returns non-zero if debugged
+        // Vector 3: ProcessDebugPort (class 7) — non-zero when debugged
         try
         {
-            int debugPort = 0;
-            int ret = NtQueryInformationProcess(
-                Process.GetCurrentProcess().Handle,
-                7 /* ProcessDebugPort */,
-                ref debugPort, sizeof(int), out _);
-            if (ret == 0 && debugPort != 0) return true;
+            int port = 0;
+            if (NtQueryInformationProcess(Process.GetCurrentProcess().Handle,
+                    7, ref port, sizeof(int), out _) == 0 && port != 0) return true;
         }
         catch { }
+
+        // Vector 4: ProcessDebugFlags (class 31) — 0 when debugged (inverse of DebugPort)
+        // Catches debuggers that clear the DebugPort field (ScyllaHide etc.)
+        try
+        {
+            int flags = 1; // default non-zero so a query failure doesn't trigger
+            if (NtQueryInformationProcess(Process.GetCurrentProcess().Handle,
+                    31, ref flags, sizeof(int), out _) == 0 && flags == 0) return true;
+        }
+        catch { }
+
+        // Vector 5: kernel debugger (WinDbg at kernel level, boot debugging)
+        try
+        {
+            var kdbg = default(KernelDebuggerInfo);
+            if (NtQuerySystemInformation(35, ref kdbg, 2, out _) == 0
+                && kdbg.KernelDebuggerEnabled != 0
+                && kdbg.KernelDebuggerNotPresent == 0) return true;
+        }
+        catch { }
+
+        // Vector 6: parent process — dnSpy/x64dbg launching the app to debug it
+        if (HasSuspiciousParentProcess()) return true;
 
         return false;
 #endif
     }
 
+    private static bool HasSuspiciousParentProcess()
+    {
+        try
+        {
+            var pbi = default(ProcessBasicInfo);
+            int ret = NtQueryInformationProcessBasic(
+                Process.GetCurrentProcess().Handle,
+                0, ref pbi, Marshal.SizeOf<ProcessBasicInfo>(), out _);
+            if (ret != 0) return false;
+
+            int parentPid = (int)pbi.InheritedFromUniqueProcessId;
+            if (parentPid <= 0) return false;
+
+            using var parent = Process.GetProcessById(parentPid);
+            return _reTools.Contains(parent.ProcessName);
+        }
+        catch { return false; }
+    }
+
     // ── Layer 3: Timing anomaly ────────────────────────────────────────────────
-    //
-    // A debugger running a loop in single-step mode makes it take 3–4 orders of
-    // magnitude longer.  Measure a tight loop and compare to a baseline threshold.
-    //
-    // LIMIT: hardware breakpoints don't slow the loop; out-of-process debugging
-    // doesn't slow it either.  This catches naive single-step debugging only.
 
     [MethodImpl(MethodImplOptions.NoInlining | MethodImplOptions.NoOptimization)]
     internal static bool DetectTimingAnomaly()
@@ -171,17 +212,16 @@ internal static class AntiTamper
 #if DEBUG
         return false;
 #else
-        const int iterations = 50_000;
-        // Allow for slow VMs: 500ms is extremely generous for 50k iterations
-        const long maxAllowedMs = 500;
+        const int  iterations    = 50_000;
+        const long maxAllowedMs  = 500;
 
-        var sw = Stopwatch.StartNew();
+        var sw    = Stopwatch.StartNew();
         int dummy = 0;
         for (int i = 0; i < iterations; i++)
-            dummy ^= (int)(i * 0x9E3779B9); // cheap non-dead-code loop body
+            dummy ^= (int)(i * 0x9E3779B9);
         sw.Stop();
 
-        GC.KeepAlive(dummy); // prevent optimizer from removing the loop
+        GC.KeepAlive(dummy);
         return sw.ElapsedMilliseconds > maxAllowedMs;
 #endif
     }
@@ -193,22 +233,64 @@ internal static class AntiTamper
 #if DEBUG
         return false;
 #else
-        // x64dbg, OllyDbg, WinDbg, IDA set these
         string[] suspiciousEnvKeys =
         [
-            "_MEIPASS2",           // PyInstaller packer (common RE wrapper)
-            "CORECLR_PROFILER",    // CLR profiler (some RE tools attach via profiler API)
+            "_MEIPASS2",        // PyInstaller RE wrapper
+            "CORECLR_PROFILER", // CLR profiler API (some RE tools)
         ];
 
         foreach (var key in suspiciousEnvKeys)
             if (Environment.GetEnvironmentVariable(key) is not null) return true;
 
-        // Wine check (many crackers use Wine on Linux for .NET RE)
         try
         {
-            var wineKey = Microsoft.Win32.Registry.LocalMachine
-                .OpenSubKey(@"SOFTWARE\Wine");
-            if (wineKey is not null) return true;
+            if (Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Wine") is not null)
+                return true;
+        }
+        catch { }
+
+        return false;
+#endif
+    }
+
+    // ── Layer 5: Virtual machine detection ────────────────────────────────────
+
+    internal static bool IsRunningInVm()
+    {
+#if DEBUG
+        return false;
+#else
+        string[] vmRegKeys =
+        [
+            @"SOFTWARE\VMware, Inc.\VMware Tools",
+            @"SOFTWARE\Oracle\VirtualBox Guest Additions",
+            @"SYSTEM\CurrentControlSet\Services\VBoxGuest",
+            @"SYSTEM\CurrentControlSet\Services\VMTools",
+            @"SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters",  // Hyper-V
+        ];
+
+        foreach (var keyPath in vmRegKeys)
+        {
+            try
+            {
+                if (Microsoft.Win32.Registry.LocalMachine.OpenSubKey(keyPath) is not null)
+                    return true;
+            }
+            catch { }
+        }
+
+        // BIOS string check for QEMU / Bochs
+        try
+        {
+            var sysKey = Microsoft.Win32.Registry.LocalMachine
+                .OpenSubKey(@"HARDWARE\DESCRIPTION\System");
+            if (sysKey?.GetValue("SystemBiosVersion") is string[] bios)
+            {
+                var combined = string.Join(" ", bios).ToUpperInvariant();
+                if (combined.Contains("VBOX") || combined.Contains("VMWARE")
+                    || combined.Contains("QEMU") || combined.Contains("BOCHS"))
+                    return true;
+            }
         }
         catch { }
 
@@ -223,24 +305,18 @@ internal sealed record TamperResult(
     bool DebuggerDetected,
     bool TimingAnomaly,
     bool SuspiciousEnv,
+    bool VmDetected,
     bool AssemblyModified)
 {
-    /// <summary>
-    /// True when the assembly was modified — the most actionable signal.
-    /// Forces an immediate server heartbeat so the server can compare hashes.
-    ///
-    /// We do NOT hard-lock on debugger/timing/env — too many false positives
-    /// (AV engines, corporate security tools, Wine) hurt legitimate users.
-    /// Soft signals are queued as /report events for admin review.
-    /// </summary>
     internal bool RequiresImmediateHeartbeat => AssemblyModified;
 
-    /// <summary>Report type string for /report endpoint.</summary>
     internal string? SoftReportType =>
         DebuggerDetected ? "debugger" :
         TimingAnomaly    ? "timing_anomaly" :
         SuspiciousEnv    ? "suspicious_env" :
+        VmDetected       ? "vm_detected" :
         null;
 
-    internal bool AnySoftSignal => DebuggerDetected || TimingAnomaly || SuspiciousEnv;
+    internal bool AnySoftSignal =>
+        DebuggerDetected || TimingAnomaly || SuspiciousEnv || VmDetected;
 }

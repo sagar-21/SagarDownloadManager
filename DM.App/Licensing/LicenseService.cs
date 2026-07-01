@@ -38,6 +38,10 @@ public sealed class LicenseService : IDisposable
     private PendingReport? _pendingReport;
     private readonly object _reportLock = new();
 
+    // Mid-session local integrity check — fires every 20–40 min (randomized)
+    private int _localCheckTick      = 0;
+    private int _localCheckThreshold = -1; // initialized on first tick
+
     public LicenseStatus Status       { get; private set; } = LicenseStatus.Unknown;
     public string?       LicenseKey   { get; private set; }
     public string?       Plan         { get; private set; }
@@ -193,6 +197,19 @@ public sealed class LicenseService : IDisposable
             while (await timer.WaitForNextTickAsync(ct))
             {
                 if (_current is null) continue;
+
+                // Local integrity check every 20–40 minutes (randomized interval
+                // resists timing-based analysis of when checks occur)
+                if (_localCheckThreshold < 0)
+                    _localCheckThreshold = Random.Shared.Next(20, 41);
+
+                if (++_localCheckTick >= _localCheckThreshold)
+                {
+                    _localCheckTick      = 0;
+                    _localCheckThreshold = Random.Shared.Next(20, 41);
+                    RunLocalIntegrityCheck();
+                }
+
                 try
                 {
                     var fp = HardwareFingerprint.Compute();
@@ -203,6 +220,39 @@ public sealed class LicenseService : IDisposable
             }
         }
         catch (OperationCanceledException) { }
+    }
+
+    // Re-runs tamper detection and local JWT validation mid-session without a network call.
+    // Catches in-memory patches applied after startup and fingerprint spoofing.
+    private void RunLocalIntegrityCheck()
+    {
+        try
+        {
+            var stored = _store.Load();
+            var tamper = AntiTamper.Check(stored);
+            var hash   = AntiTamper.HashMainAssembly() ?? "unknown";
+
+            if (tamper.AssemblyModified)
+                QueueIntegrityReport("hash_mismatch", hash, "Mid-session assembly hash changed");
+            else if (tamper.AnySoftSignal && tamper.SoftReportType is { } t)
+                QueueIntegrityReport(t, hash, "Mid-session signal: " + t);
+
+            // Re-validate stored token against current hardware fingerprint.
+            // Catches: fingerprint spoofing, token payload tampering, token substitution.
+            if (stored is not null)
+            {
+                var fp   = HardwareFingerprint.Compute();
+                var info = LicenseTokenValidator.Validate(stored.Token, fp);
+                if (info is null && Status is LicenseStatus.Active or LicenseStatus.GracePeriod)
+                {
+                    _store.Delete();
+                    _current = null;
+                    Set(LicenseStatus.NotActivated,
+                        "License verification failed. Please re-activate.");
+                }
+            }
+        }
+        catch { /* must never crash the heartbeat loop */ }
     }
 
     /// <summary>

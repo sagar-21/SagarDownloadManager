@@ -20,7 +20,7 @@ public sealed class AppSettings
     public bool ResumeOnRestart  { get; set; } = true;
     // ── Licensing ──────────────────────────────────────────────────────────────
     /// <summary>Base URL of the license validation server. Trailing slash not required.</summary>
-    public string LicenseServerUrl { get; set; } = "http://localhost:5000";
+    public string LicenseServerUrl { get; set; } = "https://sdm-license-server.onrender.com";
 
     // ── Browser Extension ──────────────────────────────────────────────────────
     /// <summary>Run a localhost HTTP server so the browser extension can push detected media URLs.</summary>
