@@ -15,6 +15,9 @@ public partial class LicenseAlertDialog : Window
     /// <summary>Fires when the user clicks "Enter New Key" on the Expired dialog.</summary>
     public event Action? NewKeyRequested;
 
+    /// <summary>Fires when the user clicks "Try Again" — does a heartbeat without deactivating.</summary>
+    public event Action? RetryRequested;
+
     public LicenseAlertDialog(LicenseAlertType type)
     {
         InitializeComponent();
@@ -47,9 +50,10 @@ public partial class LicenseAlertDialog : Window
             TitleText.Text              = "License Expired";
             MessageText.Text            =
                 "Your license has expired and the application can no longer run.\n\n" +
+                "• Already extended on the admin website? Click \"Try Again\" below.\n" +
                 "• Have a new key? Click \"Enter New Key\" to activate it.\n" +
-                "• Want to renew the same key? Click \"Request Extension\" to contact support.";
-            // Show the expired-only action row; hide LinkedIn (replaced by Request Extension)
+                "• Need to renew? Click \"Request Extension\" to contact support.";
+            TryAgainBtn.Visibility      = Visibility.Visible;
             ExpiredActionRow.Visibility = Visibility.Visible;
             LinkedInBtn.Visibility      = Visibility.Collapsed;
             CloseBtn.Content            = "Close";
@@ -84,6 +88,12 @@ public partial class LicenseAlertDialog : Window
             Process.Start(new ProcessStartInfo(LinkedInUrl) { UseShellExecute = true });
         }
         catch { }
+    }
+
+    private void TryAgain_Click(object sender, RoutedEventArgs e)
+    {
+        RetryRequested?.Invoke();
+        Close();
     }
 
     private void NewKey_Click(object sender, RoutedEventArgs e)

@@ -169,20 +169,63 @@ public partial class App : Application
     private void ShowAlertDialog(LicenseAlertType type)
     {
         // Keep app alive while the dialog is shown and during the window transition
-        // that follows — restored by ChangeKeyAsync after activation window opens.
+        // that follows — restored by ChangeKeyAsync / RetryHeartbeatAsync after transition.
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
         var dlg = new LicenseAlertDialog(type);
         bool wantsNewKey = false;
+        bool wantsRetry  = false;
         dlg.NewKeyRequested += () => wantsNewKey = true;
+        dlg.RetryRequested  += () => wantsRetry  = true;
         dlg.ShowDialog();
 
         if (wantsNewKey)
             _ = ChangeKeyAsync();
+        else if (wantsRetry)
+            _ = RetryHeartbeatAsync();
         else
         {
             ShutdownMode = ShutdownMode.OnLastWindowClose;
             Shutdown();
+        }
+    }
+
+    /// <summary>
+    /// After admin extends the same license key on the server, the user clicks "Try Again".
+    /// Does a fresh heartbeat without deactivating — if the server confirms the license
+    /// is now valid, opens the main window.
+    /// </summary>
+    private async Task RetryHeartbeatAsync()
+    {
+        var status = await LicenseService!.TryAutoActivateAsync(forceHeartbeat: true);
+
+        switch (status)
+        {
+            case LicenseStatus.Active:
+            case LicenseStatus.GracePeriod:
+                LicenseService.StartHeartbeat();
+                ShutdownMode = ShutdownMode.OnLastWindowClose;
+                ShowMainWindow();
+                break;
+
+            case LicenseStatus.LicenseExpired:
+                // Server still says expired — show the dialog again (user can try again later)
+                ShowAlertDialog(LicenseAlertType.Expired);
+                break;
+
+            case LicenseStatus.Suspended:
+                ShowAlertDialog(LicenseAlertType.Suspended);
+                break;
+
+            case LicenseStatus.Revoked:
+                ShowAlertDialog(LicenseAlertType.Revoked);
+                break;
+
+            default:
+                // Offline or other issue — lock window with its own Retry button
+                ShutdownMode = ShutdownMode.OnLastWindowClose;
+                ShowLockWindow(status, null);
+                break;
         }
     }
 

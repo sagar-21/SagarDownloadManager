@@ -82,8 +82,11 @@ public sealed class LicenseService : IDisposable
 
         if (info is null)
         {
-            _store.Delete();
-            return Set(LicenseStatus.NotActivated, null);
+            // JWT expired or fingerprint mismatch — try the server before giving up.
+            // Admin may have extended the license; server will issue a fresh token.
+            // If unreachable, HandleOffline shows a lock screen with a Retry button.
+            _current = stored;
+            return await RunHeartbeatOnceAsync(fp);
         }
 
         _current = stored;
