@@ -1084,25 +1084,48 @@
                         </StackPanel>
                     </Border>
 
-                    <!-- Deactivate card -->
+                    <!-- Deactivate / Change key card -->
                     <TextBlock Text="DEVICE MANAGEMENT" Style="{StaticResource SectionLabel}"/>
                     <Border Style="{StaticResource CardBorder}">
-                        <Grid>
-                            <StackPanel VerticalAlignment="Center">
-                                <TextBlock Text="Deactivate this device" FontSize="14" FontWeight="Medium" Foreground="White"/>
-                                <TextBlock FontSize="12" Foreground="White" Opacity="0.50" Margin="0,2,0,0"
-                                           TextWrapping="Wrap"
-                                           Text="Remove this machine from your license. You can activate on another device after deactivating."/>
-                            </StackPanel>
-                            <ui:Button HorizontalAlignment="Right" VerticalAlignment="Center"
-                                       Appearance="Caution" Padding="14,7"
-                                       Command="{Binding DeactivateCommand}">
-                                <StackPanel Orientation="Horizontal">
-                                    <ui:SymbolIcon Symbol="PersonDelete24" FontSize="13" Margin="0,0,6,0"/>
-                                    <TextBlock Text="Deactivate" FontSize="12"/>
+                        <StackPanel>
+                            <!-- Deactivate row -->
+                            <Grid>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="Deactivate this device" FontSize="14" FontWeight="Medium" Foreground="White"/>
+                                    <TextBlock FontSize="12" Foreground="White" Opacity="0.50" Margin="0,2,0,0"
+                                               TextWrapping="Wrap"
+                                               Text="Remove this machine from your license. You can activate on another device after deactivating."/>
                                 </StackPanel>
-                            </ui:Button>
-                        </Grid>
+                                <ui:Button HorizontalAlignment="Right" VerticalAlignment="Center"
+                                           Appearance="Caution" Padding="14,7"
+                                           Command="{Binding DeactivateCommand}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <ui:SymbolIcon Symbol="PersonDelete24" FontSize="13" Margin="0,0,6,0"/>
+                                        <TextBlock Text="Deactivate" FontSize="12"/>
+                                    </StackPanel>
+                                </ui:Button>
+                            </Grid>
+
+                            <!-- Change key row -->
+                            <Border BorderBrush="#10FFFFFF" BorderThickness="0,1,0,0" Padding="0,12,0,0" Margin="0,12,0,0">
+                                <Grid>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="Change license key" FontSize="14" FontWeight="Medium" Foreground="White"/>
+                                        <TextBlock FontSize="12" Foreground="White" Opacity="0.50" Margin="0,2,0,0"
+                                                   TextWrapping="Wrap"
+                                                   Text="Deactivate the current key and enter a new or renewed license key."/>
+                                    </StackPanel>
+                                    <ui:Button HorizontalAlignment="Right" VerticalAlignment="Center"
+                                               Appearance="Secondary" Padding="14,7"
+                                               Click="ChangeKey_Click">
+                                        <StackPanel Orientation="Horizontal">
+                                            <ui:SymbolIcon Symbol="Key24" FontSize="13" Margin="0,0,6,0"/>
+                                            <TextBlock Text="Change Key" FontSize="12"/>
+                                        </StackPanel>
+                                    </ui:Button>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
                     </Border>
                 </StackPanel>
             </ScrollViewer>

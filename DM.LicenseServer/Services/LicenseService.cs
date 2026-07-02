@@ -53,6 +53,7 @@ public interface ILicenseService
     Task<License?>               GetLicenseByIdAsync(Guid id);
     Task<License>                CreateLicenseAsync(CreateLicenseDto dto);
     Task<bool>                   SetLicenseStatusAsync(Guid id, LicenseStatus status, string notes);
+    Task<bool>                   ExtendLicenseAsync(Guid id, DateTime newExpiry, string notes);
     Task<bool>                   DeactivateDeviceAsync(Guid deviceId);
     Task<bool>                   ReactivateDeviceAsync(Guid deviceId);
     Task<List<DeviceSummary>>    GetDevicesAsync(Guid licenseId);
@@ -403,6 +404,21 @@ public sealed class LicenseService : ILicenseService
             _                       => ActivationEvent.Reactivated,
         };
         await Log(id, null, evt, "admin", notes);
+        await _db.SaveChangesAsync();
+        return true;
+    }
+
+    public async Task<bool> ExtendLicenseAsync(Guid id, DateTime newExpiry, string notes)
+    {
+        var license = await _db.Licenses.FindAsync(id);
+        if (license is null) return false;
+
+        license.ExpiresAt = newExpiry.ToUniversalTime();
+        // If the license was expired, bring it back to Active automatically
+        if (license.Status == LicenseStatus.Expired)
+            license.Status = LicenseStatus.Active;
+
+        await Log(id, null, ActivationEvent.Extended, "admin", notes);
         await _db.SaveChangesAsync();
         return true;
     }

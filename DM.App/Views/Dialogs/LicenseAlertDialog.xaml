@@ -53,6 +53,40 @@
             <StackPanel Grid.Row="3" Orientation="Horizontal"
                         HorizontalAlignment="Right"
                         Margin="26,20,26,26">
+                <Button x:Name="NewKeyBtn"
+                        Content="&#128273;  Enter New Key"
+                        Margin="0,0,10,0"
+                        Visibility="Collapsed"
+                        Click="NewKey_Click">
+                    <Button.Style>
+                        <Style TargetType="Button">
+                            <Setter Property="Background" Value="#F97316"/>
+                            <Setter Property="Foreground" Value="White"/>
+                            <Setter Property="BorderThickness" Value="0"/>
+                            <Setter Property="Height" Value="36"/>
+                            <Setter Property="Padding" Value="18,0"/>
+                            <Setter Property="FontSize" Value="13"/>
+                            <Setter Property="Cursor" Value="Hand"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="{TemplateBinding Background}"
+                                                CornerRadius="7"
+                                                Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter HorizontalAlignment="Center"
+                                                              VerticalAlignment="Center"/>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter Property="Background" Value="#EA6A00"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </Button.Style>
+                </Button>
                 <Button x:Name="LinkedInBtn"
                         Content="&#128279;  Contact on LinkedIn"
                         Margin="0,0,10,0"

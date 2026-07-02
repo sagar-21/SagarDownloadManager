@@ -27,4 +27,5 @@ public enum ActivationEvent
     TamperReported,     // app reported its own hash; mismatch logged here
     AbuseFlagged,       // geo-impossibility, device-limit burst, etc.
     SessionDataServed,  // /session-data issued a token (audit trail)
+    Extended,           // admin extended the license expiry date
 }

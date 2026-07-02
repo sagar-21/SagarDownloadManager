@@ -348,6 +348,9 @@ DM.App/tools/yt-dlp.exe
 # Publish output — build artifact, not source
 publish_out/
 
+# Installer output — binary too large for GitHub (>100 MB)
+installer_out/
+
 # Tabs Studio
 *.tss
 

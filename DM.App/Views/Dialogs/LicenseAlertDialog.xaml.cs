@@ -12,6 +12,9 @@ public partial class LicenseAlertDialog : Window
     private const string LinkedInUrl =
         "https://www.linkedin.com/in/sagar-vishwakarma-b1a015129";
 
+    /// <summary>Fires when the user clicks "Enter New Key" on the Expired dialog.</summary>
+    public event Action? NewKeyRequested;
+
     public LicenseAlertDialog(LicenseAlertType type)
     {
         InitializeComponent();
@@ -43,8 +46,8 @@ public partial class LicenseAlertDialog : Window
             TitleText.Text         = "License Expired";
             MessageText.Text       =
                 "Your license has expired and the application can no longer run.\n\n" +
-                "Please renew your license to continue using the application. " +
-                "Contact support on LinkedIn for renewal options.";
+                "If you have renewed or purchased a new license key, click \"Enter New Key\" below.";
+            NewKeyBtn.Visibility   = Visibility.Visible;
         }
         else
         {
@@ -73,6 +76,12 @@ public partial class LicenseAlertDialog : Window
             Process.Start(new ProcessStartInfo(LinkedInUrl) { UseShellExecute = true });
         }
         catch { }
+    }
+
+    private void NewKey_Click(object sender, RoutedEventArgs e)
+    {
+        NewKeyRequested?.Invoke();
+        Close();
     }
 
     private void Close_Click(object sender, RoutedEventArgs e)

@@ -93,7 +93,7 @@
       </div>
 
       <!-- Action buttons -->
-      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:flex-start">
         @if (Model.License.Status == LicenseStatus.Active)
         {
           <form method="post" asp-page-handler="SetStatus">
@@ -108,7 +108,7 @@
             <button type="submit" class="ls-btn ls-btn-danger">✕ Revoke</button>
           </form>
         }
-        @if (Model.License.Status is LicenseStatus.Suspended or LicenseStatus.Revoked)
+        @if (Model.License.Status is LicenseStatus.Suspended or LicenseStatus.Revoked or LicenseStatus.Expired)
         {
           <form method="post" asp-page-handler="SetStatus">
             @Html.AntiForgeryToken()
@@ -116,6 +116,17 @@
             <button type="submit" class="ls-btn ls-btn-success">↺ Reactivate</button>
           </form>
         }
+        <!-- Extend expiry -->
+        <form method="post" asp-page-handler="Extend" style="display:flex;gap:6px;align-items:center">
+          @Html.AntiForgeryToken()
+          <input type="date" name="newExpiry"
+                 value="@((Model.License.ExpiresAt ?? DateTime.UtcNow.AddYears(1)).ToString("yyyy-MM-dd"))"
+                 style="background:var(--surface-2);border:1px solid var(--border);color:var(--text-1);
+                        border-radius:6px;padding:5px 10px;font-size:13px;height:34px"/>
+          <button type="submit" class="ls-btn ls-btn-primary" title="Set new expiry date">
+            ⏳ Extend
+          </button>
+        </form>
       </div>
     </div>
 

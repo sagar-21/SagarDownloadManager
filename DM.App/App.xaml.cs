@@ -97,11 +97,10 @@ public partial class App : Application
             case LicenseStatus.Suspended:
             case LicenseStatus.Revoked:
             case LicenseStatus.LicenseExpired:
-                new LicenseAlertDialog(
-                    status == LicenseStatus.Suspended  ? LicenseAlertType.Suspended :
+                ShowAlertDialog(
+                    status == LicenseStatus.Suspended      ? LicenseAlertType.Suspended :
                     status == LicenseStatus.LicenseExpired ? LicenseAlertType.Expired :
-                    LicenseAlertType.Revoked).ShowDialog();
-                Shutdown();
+                    LicenseAlertType.Revoked);
                 break;
 
             default: // Expired, offline grace expired
@@ -150,11 +149,10 @@ public partial class App : Application
                 case LicenseStatus.Suspended:
                 case LicenseStatus.Revoked:
                 case LicenseStatus.LicenseExpired:
-                    new LicenseAlertDialog(
+                    ShowAlertDialog(
                         status == LicenseStatus.Suspended      ? LicenseAlertType.Suspended :
                         status == LicenseStatus.LicenseExpired ? LicenseAlertType.Expired :
-                        LicenseAlertType.Revoked).ShowDialog();
-                    Shutdown();
+                        LicenseAlertType.Revoked);
                     break;
 
                 default:
@@ -168,9 +166,40 @@ public partial class App : Application
 
     // ── Window helpers ────────────────────────────────────────────────────────
 
+    private void ShowAlertDialog(LicenseAlertType type)
+    {
+        var dlg = new LicenseAlertDialog(type);
+        bool wantsNewKey = false;
+        dlg.NewKeyRequested += () => wantsNewKey = true;
+        dlg.ShowDialog();
+
+        if (wantsNewKey)
+            _ = ChangeKeyAsync();
+        else
+            Shutdown();
+    }
+
     internal void ShowActivationWindow()
     {
         new ActivationWindow(new ActivationViewModel(LicenseService!)).Show();
+    }
+
+    /// <summary>
+    /// Deactivates the current license, closes the main window, and shows the activation
+    /// screen — used by "Change License Key" from Settings and the Expired dialog.
+    /// </summary>
+    internal async Task ChangeKeyAsync()
+    {
+        if (LicenseService is not null)
+            await LicenseService.DeactivateAsync();
+
+        // Close main window and clean up ViewModel
+        MainWindow?.Close();
+        MainWindow = null;
+        ViewModel?.Dispose();
+        ViewModel = null;
+
+        ShowActivationWindow();
     }
 
     private void ShowMainWindow()

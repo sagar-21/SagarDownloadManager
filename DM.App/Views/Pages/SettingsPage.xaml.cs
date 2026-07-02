@@ -71,4 +71,10 @@ public partial class SettingsPage : Page
             "https://www.linkedin.com/in/sagar-vishwakarma-b1a015129")
             { UseShellExecute = true });
     }
+
+    private async void ChangeKey_Click(object sender, RoutedEventArgs e)
+    {
+        if (Application.Current is App app)
+            await app.ChangeKeyAsync();
+    }
 }

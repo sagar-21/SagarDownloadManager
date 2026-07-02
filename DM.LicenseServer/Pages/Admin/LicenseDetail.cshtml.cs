@@ -48,6 +48,24 @@ public class LicenseDetailModel : PageModel
         return Redirect($"/admin/licenses/{id}?flash=Status+updated+to+{s}");
     }
 
+    public async Task<IActionResult> OnPostExtendAsync(Guid id, string newExpiry)
+    {
+        if (!DateTime.TryParse(newExpiry, out var expiry))
+        {
+            Error = "Invalid expiry date.";
+            return await ReloadPage(id);
+        }
+
+        var ok = await _svc.ExtendLicenseAsync(id, expiry, "via admin panel");
+        if (!ok)
+        {
+            Error = "License not found.";
+            return await ReloadPage(id);
+        }
+
+        return Redirect($"/admin/licenses/{id}?flash=Expiry+extended+to+{expiry:yyyy-MM-dd}");
+    }
+
     public async Task<IActionResult> OnPostDeactivateDeviceAsync(Guid id, Guid deviceId)
     {
         await _svc.DeactivateDeviceAsync(deviceId);
