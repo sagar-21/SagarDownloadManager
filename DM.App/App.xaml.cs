@@ -168,6 +168,10 @@ public partial class App : Application
 
     private void ShowAlertDialog(LicenseAlertType type)
     {
+        // Keep app alive while the dialog is shown and during the window transition
+        // that follows — restored by ChangeKeyAsync after activation window opens.
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
         var dlg = new LicenseAlertDialog(type);
         bool wantsNewKey = false;
         dlg.NewKeyRequested += () => wantsNewKey = true;
@@ -176,7 +180,10 @@ public partial class App : Application
         if (wantsNewKey)
             _ = ChangeKeyAsync();
         else
+        {
+            ShutdownMode = ShutdownMode.OnLastWindowClose;
             Shutdown();
+        }
     }
 
     internal void ShowActivationWindow()
@@ -190,16 +197,33 @@ public partial class App : Application
     /// </summary>
     internal async Task ChangeKeyAsync()
     {
-        if (LicenseService is not null)
-            await LicenseService.DeactivateAsync();
+        // Prevent WPF auto-shutdown during the gap between windows.
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
-        // Close main window and clean up ViewModel
-        MainWindow?.Close();
-        MainWindow = null;
-        ViewModel?.Dispose();
-        ViewModel = null;
+        // Unsubscribe so DeactivateAsync's NotActivated status change
+        // does not trigger the lock-screen or alert handler mid-transition.
+        LicenseService!.StatusChanged -= OnLicenseStatusChanged;
 
+        // Close main window if it was open (Settings "Change Key" path).
+        if (MainWindow is not null)
+        {
+            MainWindow.Close();
+            MainWindow = null;
+            ViewModel?.Dispose();
+            ViewModel = null;
+        }
+
+        // Tell the server this device is deactivated (best-effort).
+        await LicenseService.DeactivateAsync();
+
+        // Open activation window — user enters their key here.
         ShowActivationWindow();
+
+        // Re-subscribe so the heartbeat handler works after activation.
+        LicenseService.StatusChanged += OnLicenseStatusChanged;
+
+        // Restore normal shutdown behaviour now that a window is open.
+        ShutdownMode = ShutdownMode.OnLastWindowClose;
     }
 
     private void ShowMainWindow()
