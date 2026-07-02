@@ -35,19 +35,24 @@ public partial class LicenseAlertDialog : Window
                 "Your license has been suspended by the administrator.\n\n" +
                 "The application will now close. To reactivate your license " +
                 "or for any queries, please contact support on LinkedIn.";
+            SetLinkedInLabel("📎  Contact on LinkedIn");
         }
         else if (type == LicenseAlertType.Expired)
         {
             var amber = (Color)ColorConverter.ConvertFromString("#F97316");
-            AccentBar.Background   = new SolidColorBrush(amber);
-            IconBorder.Background  = new SolidColorBrush(Color.FromArgb(40, 249, 115, 22));
-            IconText.Text          = "⌛";
-            IconText.Foreground    = new SolidColorBrush(amber);
-            TitleText.Text         = "License Expired";
-            MessageText.Text       =
+            AccentBar.Background        = new SolidColorBrush(amber);
+            IconBorder.Background       = new SolidColorBrush(Color.FromArgb(40, 249, 115, 22));
+            IconText.Text               = "⌛";
+            IconText.Foreground         = new SolidColorBrush(amber);
+            TitleText.Text              = "License Expired";
+            MessageText.Text            =
                 "Your license has expired and the application can no longer run.\n\n" +
-                "If you have renewed or purchased a new license key, click \"Enter New Key\" below.";
-            NewKeyBtn.Visibility   = Visibility.Visible;
+                "• Have a new key? Click \"Enter New Key\" to activate it.\n" +
+                "• Want to renew the same key? Click \"Request Extension\" to contact support.";
+            // Show the expired-only action row; hide LinkedIn (replaced by Request Extension)
+            ExpiredActionRow.Visibility = Visibility.Visible;
+            LinkedInBtn.Visibility      = Visibility.Collapsed;
+            CloseBtn.Content            = "Close";
         }
         else
         {
@@ -61,8 +66,11 @@ public partial class LicenseAlertDialog : Window
                 "Your license has been revoked and this installation has been disabled.\n\n" +
                 "The application will now close. For further assistance, " +
                 "please contact support on LinkedIn.";
+            SetLinkedInLabel("📎  Contact on LinkedIn");
         }
     }
+
+    private void SetLinkedInLabel(string content) => LinkedInBtn.Content = content;
 
     private void Window_MouseDown(object sender, MouseButtonEventArgs e)
     {
@@ -82,6 +90,16 @@ public partial class LicenseAlertDialog : Window
     {
         NewKeyRequested?.Invoke();
         Close();
+    }
+
+    private void RequestExtension_Click(object sender, RoutedEventArgs e)
+    {
+        // Opens LinkedIn so the user can message the developer to request a license extension
+        try
+        {
+            Process.Start(new ProcessStartInfo(LinkedInUrl) { UseShellExecute = true });
+        }
+        catch { }
     }
 
     private void Close_Click(object sender, RoutedEventArgs e)
