@@ -7,7 +7,8 @@ public enum LicenseStatus
     Active,         // server confirmed (or fresh token within grace window)
     GracePeriod,    // server unreachable but token not yet expired
     Suspended,      // server returned "warn" (admin suspended the license)
-    Revoked,        // server returned "disable" (revoked or permanently expired)
+    Revoked,        // server returned "disable" and license is not expired
+    LicenseExpired, // server returned "disable" because the license key has expired
     Expired,        // token expired AND server unreachable — grace window over
 }
 
@@ -46,6 +47,7 @@ public sealed class LicenseService : IDisposable
     public string?       LicenseKey   { get; private set; }
     public string?       Plan         { get; private set; }
     public string?       CustomerName { get; private set; }
+    public DateTime?     ActivatedAt  => _current?.ActivatedAt;
     internal LicenseInfo?  Token      { get; private set; }
 
     /// <summary>
@@ -125,7 +127,8 @@ public sealed class LicenseService : IDisposable
                 Token       : resp.Token,
                 Fingerprint : fp,
                 AssemblyHash: AntiTamper.HashMainAssembly(),
-                StoredAt    : DateTime.UtcNow);
+                StoredAt    : DateTime.UtcNow,
+                ActivatedAt : DateTime.UtcNow);
 
             _store.Save(stored);
             _current = stored;
@@ -305,7 +308,9 @@ public sealed class LicenseService : IDisposable
             {
                 "continue"    => Set(LicenseStatus.Active,      null),
                 "warn"        => Set(LicenseStatus.Suspended,   resp.Error ?? "License suspended."),
-                "disable"     => Set(LicenseStatus.Revoked,     resp.Error ?? "License revoked."),
+                "disable"     => IsExpiredLicense(resp.Error)
+                                   ? Set(LicenseStatus.LicenseExpired, resp.Error ?? "Your license has expired.")
+                                   : Set(LicenseStatus.Revoked,        resp.Error ?? "License revoked."),
                 "blacklisted" => Set(LicenseStatus.Revoked,     resp.Error ?? "This installation has been blocked."),
                 _             => Set(LicenseStatus.Revoked,     resp.Error ?? "License revoked."),
             };
@@ -396,6 +401,14 @@ public sealed class LicenseService : IDisposable
         LicenseKey   = info?.LicenseKey;
         Plan         = info?.Plan;
         CustomerName = info?.CustomerName;
+    }
+
+    private bool IsExpiredLicense(string? errorMessage)
+    {
+        // Check JWT claim first (most reliable), then fall back to error message text
+        if (Token?.LicenseExpiry.HasValue == true && Token.LicenseExpiry.Value < DateTime.UtcNow)
+            return true;
+        return errorMessage?.Contains("expired", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     private static bool IsNetworkError(Exception ex)

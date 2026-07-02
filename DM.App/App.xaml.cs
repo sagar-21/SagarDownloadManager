@@ -96,10 +96,11 @@ public partial class App : Application
 
             case LicenseStatus.Suspended:
             case LicenseStatus.Revoked:
+            case LicenseStatus.LicenseExpired:
                 new LicenseAlertDialog(
-                    status == LicenseStatus.Suspended
-                        ? LicenseAlertType.Suspended
-                        : LicenseAlertType.Revoked).ShowDialog();
+                    status == LicenseStatus.Suspended  ? LicenseAlertType.Suspended :
+                    status == LicenseStatus.LicenseExpired ? LicenseAlertType.Expired :
+                    LicenseAlertType.Revoked).ShowDialog();
                 Shutdown();
                 break;
 
@@ -148,10 +149,11 @@ public partial class App : Application
 
                 case LicenseStatus.Suspended:
                 case LicenseStatus.Revoked:
+                case LicenseStatus.LicenseExpired:
                     new LicenseAlertDialog(
-                        status == LicenseStatus.Suspended
-                            ? LicenseAlertType.Suspended
-                            : LicenseAlertType.Revoked).ShowDialog();
+                        status == LicenseStatus.Suspended      ? LicenseAlertType.Suspended :
+                        status == LicenseStatus.LicenseExpired ? LicenseAlertType.Expired :
+                        LicenseAlertType.Revoked).ShowDialog();
                     Shutdown();
                     break;
 
@@ -174,6 +176,7 @@ public partial class App : Application
     private void ShowMainWindow()
     {
         ViewModel  = new MainViewModel();
+        ViewModel.SettingsVm.SetLicenseService(LicenseService!);
         var win    = new MainWindow();
         MainWindow = win;
         win.Show();

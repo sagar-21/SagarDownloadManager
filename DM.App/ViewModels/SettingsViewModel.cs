@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using DM.App.Licensing;
 using DM.Core.Models;
 using DM.Core.PostDownload;
 using DM.Core.Queue;
@@ -376,6 +377,65 @@ public partial class SettingsViewModel : ObservableObject
 
     private static string IndexToVideoFormat(int i)
         => i >= 0 && i < VideoFormats.Length ? VideoFormats[i] : "mp4";
+
+    // ── LICENSE ───────────────────────────────────────────────────────────────
+
+    private LicenseService? _licenseService;
+
+    [ObservableProperty] private string _licKey         = "—";
+    [ObservableProperty] private string _licPlan        = "—";
+    [ObservableProperty] private string _licCustomer    = "—";
+    [ObservableProperty] private string _licStatusText  = "Unknown";
+    [ObservableProperty] private System.Windows.Media.Brush _licStatusBrush
+        = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x88, 0x88, 0x88));
+    [ObservableProperty] private string _licExpiry      = "—";
+    [ObservableProperty] private string _licActivatedOn = "—";
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(DeactivateCommand))]
+    private bool _canDeactivate = false;
+
+    public void SetLicenseService(LicenseService svc)
+    {
+        _licenseService = svc;
+        svc.StatusChanged += (_, _) =>
+            System.Windows.Application.Current.Dispatcher.BeginInvoke(RefreshLicenseInfo);
+        RefreshLicenseInfo();
+    }
+
+    public void RefreshLicenseInfo()
+    {
+        if (_licenseService is null) return;
+        LicKey        = _licenseService.LicenseKey ?? "—";
+        LicPlan       = _licenseService.Plan ?? "—";
+        LicCustomer   = _licenseService.CustomerName ?? "—";
+        LicExpiry     = _licenseService.Token?.LicenseExpiry?.ToString("dd MMM yyyy") ?? "—";
+        LicActivatedOn = _licenseService.ActivatedAt?.ToLocalTime().ToString("dd MMM yyyy") ?? "—";
+        CanDeactivate = _licenseService.Status == LicenseStatus.Active;
+
+        var (label, hex) = _licenseService.Status switch
+        {
+            LicenseStatus.Active         => ("Active",          "#22C55E"),
+            LicenseStatus.GracePeriod    => ("Grace Period",    "#F59E0B"),
+            LicenseStatus.Suspended      => ("Suspended",       "#F97316"),
+            LicenseStatus.Revoked        => ("Revoked",         "#EF4444"),
+            LicenseStatus.LicenseExpired => ("Expired",         "#EF4444"),
+            LicenseStatus.Expired        => ("Offline Expired", "#EF4444"),
+            LicenseStatus.NotActivated   => ("Not Activated",   "#888888"),
+            _                            => ("Unknown",         "#888888"),
+        };
+        LicStatusText  = label;
+        LicStatusBrush = new System.Windows.Media.SolidColorBrush(
+            (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(hex));
+    }
+
+    [RelayCommand(CanExecute = nameof(CanDeactivate))]
+    private async Task DeactivateAsync()
+    {
+        if (_licenseService is null) return;
+        CanDeactivate = false;
+        await _licenseService.DeactivateAsync();
+    }
 
 }
 

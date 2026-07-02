@@ -35,9 +35,24 @@ public partial class ActivationViewModel : ObservableObject
         IsActivating  = true;
         HasError      = false;
         IsSuccess     = false;
-        StatusMessage = "Contacting license server…";
 
-        var (ok, error) = await _svc.ActivateAsync(LicenseKey);
+        // Render free tier can take 30–60 s to wake from sleep.
+        // Retry once automatically so the user doesn't have to.
+        bool ok = false;
+        string? error = null;
+        for (int attempt = 1; attempt <= 2; attempt++)
+        {
+            StatusMessage = attempt == 1
+                ? "Contacting license server…"
+                : "Server waking up, retrying…";
+
+            (ok, error) = await _svc.ActivateAsync(LicenseKey);
+
+            if (ok || (error != null && !error.Contains("reach"))) break;
+
+            if (attempt == 1)
+                await Task.Delay(5000); // wait 5 s before retry
+        }
 
         IsActivating = false;
 
@@ -45,7 +60,7 @@ public partial class ActivationViewModel : ObservableObject
         {
             IsSuccess     = true;
             StatusMessage = $"Activated! Welcome, {_svc.CustomerName ?? ""}";
-            await Task.Delay(900); // brief visual confirmation before continuing
+            await Task.Delay(900);
             ActivationSucceeded?.Invoke();
         }
         else

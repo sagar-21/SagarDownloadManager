@@ -127,6 +127,7 @@
                     <ListBoxItem>Video</ListBoxItem>
                     <ListBoxItem>Appearance</ListBoxItem>
                     <ListBoxItem>Advanced</ListBoxItem>
+                    <ListBoxItem>License</ListBoxItem>
                 </ListBox>
             </Border>
 
@@ -1005,6 +1006,103 @@
                                 </StackPanel>
                             </ui:Button>
                         </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- ═════════════════════════════════════════════════
+                 TAB 6 — LICENSE
+            ═════════════════════════════════════════════════ -->
+            <ScrollViewer Grid.Column="1"
+                          Visibility="{Binding ActiveTab, Converter={StaticResource TabVis}, ConverterParameter=6}"
+                          VerticalScrollBarVisibility="Auto" Padding="24,16,24,24">
+                <StackPanel>
+                    <TextBlock Text="LICENSE DETAILS" Style="{StaticResource SectionLabel}" Margin="0,0,0,8"/>
+
+                    <!-- Status card -->
+                    <Border Style="{StaticResource CardBorder}">
+                        <StackPanel>
+                            <!-- Status row -->
+                            <Grid Margin="0,0,0,14">
+                                <TextBlock Text="Status" FontSize="14" FontWeight="Medium" Foreground="White"
+                                           VerticalAlignment="Center"/>
+                                <Border HorizontalAlignment="Right" VerticalAlignment="Center"
+                                        CornerRadius="5" Padding="10,4"
+                                        Background="{Binding LicStatusBrush}">
+                                    <TextBlock Text="{Binding LicStatusText}" FontSize="12" FontWeight="SemiBold" Foreground="White"/>
+                                </Border>
+                            </Grid>
+
+                            <!-- Key row -->
+                            <Border BorderBrush="#10FFFFFF" BorderThickness="0,1,0,0" Padding="0,12,0,12">
+                                <Grid>
+                                    <StackPanel>
+                                        <TextBlock Text="License Key" FontSize="13" FontWeight="Medium" Foreground="White"/>
+                                        <TextBlock Text="{Binding LicKey}" FontSize="12" Foreground="White"
+                                                   Opacity="0.60" Margin="0,3,0,0" FontFamily="Consolas"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+
+                            <!-- Customer & Plan row -->
+                            <Grid Margin="0,0,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Customer" FontSize="13" FontWeight="Medium" Foreground="White"/>
+                                    <TextBlock Text="{Binding LicCustomer}" FontSize="12" Foreground="White"
+                                               Opacity="0.60" Margin="0,3,0,0"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="Plan" FontSize="13" FontWeight="Medium" Foreground="White"/>
+                                    <TextBlock Text="{Binding LicPlan}" FontSize="12" Foreground="White"
+                                               Opacity="0.60" Margin="0,3,0,0"/>
+                                </StackPanel>
+                            </Grid>
+
+                            <!-- Dates row -->
+                            <Border BorderBrush="#10FFFFFF" BorderThickness="0,1,0,0" Padding="0,12,0,0">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="Activated On" FontSize="13" FontWeight="Medium" Foreground="White"/>
+                                        <TextBlock Text="{Binding LicActivatedOn}" FontSize="12" Foreground="White"
+                                                   Opacity="0.60" Margin="0,3,0,0"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="Expires On" FontSize="13" FontWeight="Medium" Foreground="White"/>
+                                        <TextBlock Text="{Binding LicExpiry}" FontSize="12" Foreground="White"
+                                                   Opacity="0.60" Margin="0,3,0,0"/>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Deactivate card -->
+                    <TextBlock Text="DEVICE MANAGEMENT" Style="{StaticResource SectionLabel}"/>
+                    <Border Style="{StaticResource CardBorder}">
+                        <Grid>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="Deactivate this device" FontSize="14" FontWeight="Medium" Foreground="White"/>
+                                <TextBlock FontSize="12" Foreground="White" Opacity="0.50" Margin="0,2,0,0"
+                                           TextWrapping="Wrap"
+                                           Text="Remove this machine from your license. You can activate on another device after deactivating."/>
+                            </StackPanel>
+                            <ui:Button HorizontalAlignment="Right" VerticalAlignment="Center"
+                                       Appearance="Caution" Padding="14,7"
+                                       Command="{Binding DeactivateCommand}">
+                                <StackPanel Orientation="Horizontal">
+                                    <ui:SymbolIcon Symbol="PersonDelete24" FontSize="13" Margin="0,0,6,0"/>
+                                    <TextBlock Text="Deactivate" FontSize="12"/>
+                                </StackPanel>
+                            </ui:Button>
+                        </Grid>
                     </Border>
                 </StackPanel>
             </ScrollViewer>

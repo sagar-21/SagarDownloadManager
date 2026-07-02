@@ -7,11 +7,12 @@ namespace DM.App.Licensing;
 
 /// <summary>Token and metadata kept between sessions.</summary>
 internal sealed record StoredLicense(
-    string   LicenseKey,
-    string   Token,         // signed JWT from server
-    string   Fingerprint,   // hardware fingerprint at activation time
-    string?  AssemblyHash,  // SHA-256 of DM.App.exe at activation time (anti-tamper baseline)
-    DateTime StoredAt
+    string    LicenseKey,
+    string    Token,         // signed JWT from server
+    string    Fingerprint,   // hardware fingerprint at activation time
+    string?   AssemblyHash,  // SHA-256 of DM.App.exe at activation time (anti-tamper baseline)
+    DateTime  StoredAt,
+    DateTime? ActivatedAt = null  // set once on first activation; null for legacy stored licenses
 );
 
 /// <summary>

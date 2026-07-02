@@ -29,7 +29,7 @@ internal sealed class LicenseClient : IDisposable
         _http = new HttpClient
         {
             BaseAddress = new Uri(serverUrl.TrimEnd('/') + "/"),
-            Timeout     = TimeSpan.FromSeconds(15),
+            Timeout     = TimeSpan.FromSeconds(45), // Render free tier cold start can take 30–40 s
         };
         _http.DefaultRequestHeaders.Add("User-Agent", "DM.App/1.0");
     }

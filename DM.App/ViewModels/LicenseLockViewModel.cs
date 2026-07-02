@@ -81,6 +81,11 @@ public partial class LicenseLockViewModel : ObservableObject
                  message ?? "Your license has been permanently revoked.",
                  false),
 
+            LicenseStatus.LicenseExpired =>
+                ("License Expired",
+                 message ?? "Your license has expired. Please renew your subscription to continue.",
+                 false),
+
             LicenseStatus.Expired =>
                 ("Offline Grace Expired",
                  message ?? "Could not verify your license and the offline grace period has expired. Connect to the internet and try again.",

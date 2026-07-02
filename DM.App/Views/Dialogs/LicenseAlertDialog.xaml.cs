@@ -5,7 +5,7 @@ using System.Windows.Media;
 
 namespace DM.App.Views.Dialogs;
 
-public enum LicenseAlertType { Suspended, Revoked }
+public enum LicenseAlertType { Suspended, Revoked, Expired }
 
 public partial class LicenseAlertDialog : Window
 {
@@ -32,6 +32,19 @@ public partial class LicenseAlertDialog : Window
                 "Your license has been suspended by the administrator.\n\n" +
                 "The application will now close. To reactivate your license " +
                 "or for any queries, please contact support on LinkedIn.";
+        }
+        else if (type == LicenseAlertType.Expired)
+        {
+            var amber = (Color)ColorConverter.ConvertFromString("#F97316");
+            AccentBar.Background   = new SolidColorBrush(amber);
+            IconBorder.Background  = new SolidColorBrush(Color.FromArgb(40, 249, 115, 22));
+            IconText.Text          = "⌛";
+            IconText.Foreground    = new SolidColorBrush(amber);
+            TitleText.Text         = "License Expired";
+            MessageText.Text       =
+                "Your license has expired and the application can no longer run.\n\n" +
+                "Please renew your license to continue using the application. " +
+                "Contact support on LinkedIn for renewal options.";
         }
         else
         {
